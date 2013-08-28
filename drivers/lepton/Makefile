@@ -11,16 +11,13 @@ ifeq ($(KERNELRELEASE),)
     # The current directory is passed to sub-makes as argument
     PWD := $(shell pwd)
 
-modules:
+all:
 	$(MAKE) -C $(KERNELDIR) ARCH=arm CROSS_COMPILE=arm-none-eabi- M=$(PWD) modules
-
-modules_install:
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules_install
 
 clean:
 	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions modules.* Module.*
 
-.PHONY: modules modules_install clean
+.PHONY: modules clean
 
 else
     # called from kernel build system: just declare what our modules are
