@@ -1,0 +1,4841 @@
+diff --git a/Makefile b/Makefile
+index d7a6921..a55bea0 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2867,6 +2867,23 @@ at91sam9g45ekes_config	:	unconfig
+ 	fi;
+ 	@$(MKCONFIG) -a at91sam9m10g45ek arm arm926ejs at91sam9m10g45ek atmel at91
+ 
++at91sam9x5ek_nandflash_config \
++at91sam9x5ek_dataflash_config \
++at91sam9x5ek_config	:	unconfig
++	@mkdir -p $(obj)include
++	@echo "#define CONFIG_AT91SAM9X5EK 1"	>>$(obj)include/config.h ; \
++	$(XECHO) "... 9X5 Variant" ; \
++
++	@if [ "$(findstring _dataflash,$@)" ] ; then \
++		echo "#define CONFIG_ATMEL_SPI 1"	>>$(obj)include/config.h ; \
++		$(XECHO) "... with environment variable in SPI DATAFLASH CS0" ; \
++	else \
++		echo "#define CONFIG_SYS_USE_NANDFLASH 1"	>>$(obj)include/config.h ; \
++		$(XECHO) "... with environment variable in NAND FLASH" ; \
++	fi;
++
++	@$(MKCONFIG) -a at91sam9x5ek arm arm926ejs at91sam9x5ek atmel at91
++
+ otc570_config	:	unconfig
+ 	@$(MKCONFIG) $(@:_config=) arm arm926ejs otc570 esd at91
+ 
+diff --git a/arch/arm/cpu/arm926ejs/at91/Makefile b/arch/arm/cpu/arm926ejs/at91/Makefile
+index 4f467be..5023092 100644
+--- a/arch/arm/cpu/arm926ejs/at91/Makefile
++++ b/arch/arm/cpu/arm926ejs/at91/Makefile
+@@ -34,6 +34,7 @@ COBJS-$(CONFIG_AT91SAM9263)	+= at91sam9263_devices.o
+ COBJS-$(CONFIG_AT91SAM9RL)	+= at91sam9rl_devices.o
+ COBJS-$(CONFIG_AT91SAM9M10G45)	+= at91sam9m10g45_devices.o
+ COBJS-$(CONFIG_AT91SAM9G45)	+= at91sam9m10g45_devices.o
++COBJS-$(CONFIG_AT91SAM9X5)	+= at91sam9x5_devices.o
+ COBJS-$(CONFIG_AT91_LED)	+= led.o
+ COBJS-y += clock.o
+ COBJS-y += cpu.o
+diff --git a/arch/arm/cpu/arm926ejs/at91/at91sam9x5_devices.c b/arch/arm/cpu/arm926ejs/at91/at91sam9x5_devices.c
+new file mode 100644
+index 0000000..559a9c5
+--- /dev/null
++++ b/arch/arm/cpu/arm926ejs/at91/at91sam9x5_devices.c
+@@ -0,0 +1,237 @@
++/*
++ * (C) Copyright 2007-2008
++ * Stelian Pop <stelian.pop@leadtechdesign.com>
++ * Lead Tech Design <www.leadtechdesign.com>
++ *
++ * See file CREDITS for list of people who contributed to this
++ * project.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of
++ * the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++ * MA 02111-1307 USA
++ */
++
++#include <common.h>
++#include <asm/arch/at91sam9x5.h>
++#include <asm/arch/at91_common.h>
++#include <asm/arch/at91_pmc.h>
++#include <asm/arch/gpio.h>
++#include <asm/arch/io.h>
++
++#include <asm/arch/memory-map.h>
++#include <../drivers/serial/atmel_usart.h>
++
++unsigned int get_chip_id(void)
++{
++	return (usart3_readl(CIDR) & ~AT91_CIDR_VERSION);
++
++}
++unsigned int get_extension_chip_id(void)
++{
++	return usart3_readl(EXID);
++}
++
++unsigned int has_emac1()
++{
++	return cpu_is_at91sam9x25();
++}
++unsigned int has_emac0()
++{
++	return !(cpu_is_at91sam9g15());
++}
++unsigned int has_lcdc()
++{
++	return cpu_is_at91sam9g15() || cpu_is_at91sam9g35()
++		|| cpu_is_at91sam9x35();
++}
++
++char *get_cpu_name()
++{
++	unsigned int extension_id = get_extension_chip_id();
++	if (cpu_is_at91sam9x5())
++		switch (extension_id) {
++		case ARCH_EXID_AT91SAM9G15:
++			return CONFIG_SYS_AT91_G15_CPU_NAME;
++		case ARCH_EXID_AT91SAM9G25:
++			return CONFIG_SYS_AT91_G25_CPU_NAME;
++		case ARCH_EXID_AT91SAM9G35:
++			return CONFIG_SYS_AT91_G35_CPU_NAME;
++		case ARCH_EXID_AT91SAM9X25:
++			return CONFIG_SYS_AT91_X25_CPU_NAME;
++		case ARCH_EXID_AT91SAM9X35:
++			return CONFIG_SYS_AT91_X35_CPU_NAME;
++		default:
++			return CONFIG_SYS_AT91_UNKNOWN_CPU;
++		}
++	else
++		return CONFIG_SYS_AT91_UNKNOWN_CPU;
++}
++
++unsigned int usart_set_baudrate(
++	const unsigned int master_clock,	/* Peripheral Clock */
++	const unsigned int baud_rate)		/* UART Baudrate */
++{
++	unsigned int baud_value = ((master_clock * 10) / (baud_rate * 16));
++	if ((baud_value % 10) >= 5)
++		baud_value = (baud_value / 10) + 1;
++	else
++		baud_value /= 10;
++	return baud_value;
++}
++
++void at91_serial3_hw_init(void)
++{
++	unsigned int baud;
++	at91_pmc_t *pmc = (at91_pmc_t *) AT91_PMC_BASE;
++	writel(1 << AT91SAM9X5_ID_PIOAB, &pmc->pcer);
++	writel(1 << AT91SAM9X5_ID_SYS, &pmc->pcer);
++
++	/* Reset receiver */
++	usart3_writel(CR, USART3_BIT(RSTRX));
++	usart3_writel(CR, USART3_BIT(RXEN));
++	/* Disable interrupts */
++	usart3_writel(IDR, 0xffffffff);
++	usart3_writel(CR, USART3_BIT(RSTRX) | USART3_BIT(RSTTX) \
++		| USART3_BIT(RXDIS) | USART3_BIT(TXDIS));
++
++	/* Set Baudrate */
++	baud = usart_set_baudrate(133000000, 115200);
++	usart3_writel(BRGR, baud);
++
++	/* MUX PIO periph A */
++	at91_set_a_periph(AT91_PIO_PORTA, 9, 0);	/* DRXD */
++	at91_set_a_periph(AT91_PIO_PORTA, 10, 1);	/* DTXD */
++
++	at91_port_t *pioa = (at91_port_t *) (0xFFFFF400);
++	pioa->pdr = AT91C_PA9_DRXD | AT91C_PA10_DTXD;
++
++	/* Enable TX + RX */
++	usart3_writel(CR, USART3_BIT(TXEN));
++	usart3_writel(CR, USART3_BIT(RXEN));
++}
++
++void at91_serial_hw_init(void)
++{
++#ifdef CONFIG_USART3	/* DBGU */
++	at91_serial3_hw_init();
++#endif
++}
++
++#ifdef CONFIG_ATMEL_SPI
++void at91_spi0_hw_init(unsigned long cs_mask)
++{
++	at91_pmc_t	*pmc = (at91_pmc_t *) AT91_PMC_BASE;
++	writel(1 << AT91SAM9X5_ID_PIOAB, &pmc->pcer);
++
++	at91_set_a_periph(AT91_PIO_PORTA, 11, 0);	/* SPI0_MISO */
++	at91_set_a_periph(AT91_PIO_PORTA, 12, 0);	/* SPI0_MOSI */
++	at91_set_a_periph(AT91_PIO_PORTA, 13, 0);	/* SPI0_SPCK */
++
++	/* Enable clock */
++	writel(1 << AT91SAM9X5_ID_SPI0, &pmc->pcer);
++
++	if (cs_mask & (1 << 0))
++		at91_set_a_periph(AT91_PIO_PORTA, 14, 0);
++	if (cs_mask & (1 << 1))
++		at91_set_b_periph(AT91_PIO_PORTA, 7, 0);
++	if (cs_mask & (1 << 2))
++		at91_set_b_periph(AT91_PIO_PORTA, 1, 0);
++	if (cs_mask & (1 << 3))
++		at91_set_b_periph(AT91_PIO_PORTB, 3, 0);
++	if (cs_mask & (1 << 4))
++		at91_set_pio_output(AT91_PIO_PORTA, 14, 0);
++	if (cs_mask & (1 << 5))
++		at91_set_pio_output(AT91_PIO_PORTA, 7, 0);
++	if (cs_mask & (1 << 6))
++		at91_set_pio_output(AT91_PIO_PORTA, 1, 0);
++	if (cs_mask & (1 << 7))
++		at91_set_pio_output(AT91_PIO_PORTB, 3, 0);
++}
++
++void at91_spi1_hw_init(unsigned long cs_mask)
++{
++	at91_pmc_t	*pmc = (at91_pmc_t *) AT91_PMC_BASE;
++	writel(1 << AT91SAM9X5_ID_PIOAB, &pmc->pcer);
++
++	at91_set_b_periph(AT91_PIO_PORTA, 21, 0);	/* SPI1_MISO */
++	at91_set_b_periph(AT91_PIO_PORTA, 22, 0);	/* SPI1_MOSI */
++	at91_set_b_periph(AT91_PIO_PORTA, 23, 0);	/* SPI1_SPCK */
++
++	/* Enable clock */
++	writel(1 << AT91SAM9X5_ID_SPI1, &pmc->pcer);
++
++	if (cs_mask & (1 << 0))
++		at91_set_b_periph(AT91_PIO_PORTA, 8, 0);
++	if (cs_mask & (1 << 1))
++		at91_set_b_periph(AT91_PIO_PORTA, 0, 0);
++	if (cs_mask & (1 << 2))
++		at91_set_b_periph(AT91_PIO_PORTA, 31, 0);
++	if (cs_mask & (1 << 3))
++		at91_set_b_periph(AT91_PIO_PORTA, 30, 0);
++	if (cs_mask & (1 << 4))
++		at91_set_pio_output(AT91_PIO_PORTA, 8, 0);
++	if (cs_mask & (1 << 5))
++		at91_set_pio_output(AT91_PIO_PORTA, 0, 0);
++	if (cs_mask & (1 << 6))
++		at91_set_pio_output(AT91_PIO_PORTA, 31, 0);
++	if (cs_mask & (1 << 7))
++		at91_set_pio_output(AT91_PIO_PORTA, 30, 0);
++}
++#endif
++
++#ifdef CONFIG_MACB
++void at91_macb_hw_init(void)
++{
++	if (has_emac0()) {
++		at91_set_a_periph(AT91_PIO_PORTB, 4, 0);	/* ETXCK */
++		at91_set_a_periph(AT91_PIO_PORTB, 3, 0);	/* ERXDV */
++		at91_set_a_periph(AT91_PIO_PORTB, 0, 0);	/* ERX0 */
++		at91_set_a_periph(AT91_PIO_PORTB, 1, 0);	/* ERX1 */
++		at91_set_a_periph(AT91_PIO_PORTB, 2, 0);	/* ERXER */
++		at91_set_a_periph(AT91_PIO_PORTB, 7, 0);	/* ETXEN */
++		at91_set_a_periph(AT91_PIO_PORTB, 9, 0);	/* ETX0 */
++		at91_set_a_periph(AT91_PIO_PORTB, 10, 0);	/* ETX1 */
++		at91_set_a_periph(AT91_PIO_PORTB, 5, 0);	/* EMDIO */
++		at91_set_a_periph(AT91_PIO_PORTB, 6, 0);	/* EMDC */
++	}
++
++	if (has_emac1()) {
++		/* EMAC1 pins setup */
++		at91_set_b_periph(AT91_PIO_PORTC, 29, 0);	/* ETXCK */
++		at91_set_b_periph(AT91_PIO_PORTC, 28, 0);	/* ECRSDV */
++		at91_set_b_periph(AT91_PIO_PORTC, 20, 0);	/* ERXO */
++		at91_set_b_periph(AT91_PIO_PORTC, 21, 0);	/* ERX1 */
++		at91_set_b_periph(AT91_PIO_PORTC, 16, 0);	/* ERXER */
++		at91_set_b_periph(AT91_PIO_PORTC, 27, 0);	/* ETXEN */
++		at91_set_b_periph(AT91_PIO_PORTC, 18, 0);	/* ETX0 */
++		at91_set_b_periph(AT91_PIO_PORTC, 19, 0);	/* ETX1 */
++		at91_set_b_periph(AT91_PIO_PORTC, 31, 0);	/* EMDIO */
++		at91_set_b_periph(AT91_PIO_PORTC, 30, 0);	/* EMDC */
++	}
++
++#ifndef CONFIG_RMII
++	/* Only emac0 support MII */
++	if (has_emac0()) {
++		at91_set_b_periph(AT91_PIO_PORTB, 16, 0);	/* ECRS */
++		at91_set_b_periph(AT91_PIO_PORTB, 17, 0);	/* ECOL */
++		at91_set_b_periph(AT91_PIO_PORTB, 13,  0);	/* ERX2 */
++		at91_set_b_periph(AT91_PIO_PORTB, 14,  0);	/* ERX3 */
++		at91_set_b_periph(AT91_PIO_PORTB, 15, 0);	/* ERXCK */
++		at91_set_b_periph(AT91_PIO_PORTB, 11,  0);	/* ETX2 */
++		at91_set_b_periph(AT91_PIO_PORTB, 12,  0);	/* ETX3 */
++		at91_set_b_periph(AT91_PIO_PORTB, 8, 0);	/* ETXER */
++	}
++#endif
++}
++#endif
+diff --git a/arch/arm/cpu/arm926ejs/at91/clock.c b/arch/arm/cpu/arm926ejs/at91/clock.c
+index ecf91f5..d6f2755 100644
+--- a/arch/arm/cpu/arm926ejs/at91/clock.c
++++ b/arch/arm/cpu/arm926ejs/at91/clock.c
+@@ -185,14 +185,21 @@ int at91_clock_init(unsigned long main_clock)
+ 	 * For now, assume this parentage won't change.
+ 	 */
+ 	mckr = readl(&pmc->mckr);
+-#if defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45)
++#if defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45) \
++		|| defined(CONFIG_AT91SAM9X5)
+ 	/* plla divisor by 2 */
+ 	plla_rate_hz /= (1 << ((mckr & 1 << 12) >> 12));
+ #endif
+ 	mck_rate_hz = at91_css_to_rate(mckr & AT91_PMC_MCKR_CSS_MASK);
+ 	freq = mck_rate_hz;
+ 
++#if defined(CONFIG_AT91SAM9X5)
++	/* 9x5 is different in prescale */
++	freq /= (1 << ((mckr & AT91_PMC_MCKR_PRES_9X5_MASK) >> 4));
++#else
+ 	freq /= (1 << ((mckr & AT91_PMC_MCKR_PRES_MASK) >> 2));	/* prescale */
++#endif
++
+ #if defined(CONFIG_AT91RM9200)
+ 	/* mdiv */
+ 	mck_rate_hz = freq / (1 + ((mckr & AT91_PMC_MCKR_MDIV_MASK) >> 8));
+@@ -202,7 +209,8 @@ int at91_clock_init(unsigned long main_clock)
+ 		freq / ((mckr & AT91_PMC_MCKR_MDIV_MASK) >> 7) : freq;
+ 	if (mckr & AT91_PMC_MCKR_MDIV_MASK)
+ 		freq /= 2;			/* processor clock division */
+-#elif defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45)
++#elif defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45) \
++		|| defined(CONFIG_AT91SAM9X5)
+ 	mck_rate_hz = (mckr & AT91_PMC_MCKR_MDIV_MASK) ==
+ 		(AT91_PMC_MCKR_MDIV_2 | AT91_PMC_MCKR_MDIV_4)
+ 		? freq / 3
+diff --git a/arch/arm/cpu/arm926ejs/at91/timer.c b/arch/arm/cpu/arm926ejs/at91/timer.c
+index d21eebf..51e791e 100644
+--- a/arch/arm/cpu/arm926ejs/at91/timer.c
++++ b/arch/arm/cpu/arm926ejs/at91/timer.c
+@@ -36,7 +36,7 @@
+  */
+ #define TIMER_LOAD_VAL	0xfffff
+ 
+-static ulong timestamp;
++static long long timestamp;
+ static ulong lastinc;
+ static ulong timer_freq;
+ 
+@@ -138,8 +138,5 @@ ulong get_timer(ulong base)
+  */
+ ulong get_tbclk(void)
+ {
+-	ulong tbclk;
+-
+-	tbclk = CONFIG_SYS_HZ;
+-	return tbclk;
++	return timer_freq;
+ }
+diff --git a/arch/arm/include/asm/arch-at91/at91_pio.h b/arch/arm/include/asm/arch-at91/at91_pio.h
+index f7915a3..26ff858 100644
+--- a/arch/arm/include/asm/arch-at91/at91_pio.h
++++ b/arch/arm/include/asm/arch-at91/at91_pio.h
+@@ -66,16 +66,56 @@ typedef struct at91_port {
+ 	u32	puer;		/* 0x64 Pull-up Enable Register */
+ 	u32	pusr;		/* 0x68 Pad Pull-up Status Register */
+ 	u32	reserved4;
++#if defined(CONFIG_AT91SAM9X5)
++	u32 abcdsr1;	/* 0x70 Peripheral ABCD Select Register 1 */
++#else
+ 	u32	asr;		/* 0x70 Select A Register */
++#endif
++#if defined(CONFIG_AT91SAM9X5)
++	u32 abcdsr2;	/* 0x74 Peripheral ABCD Select Register 2 */
++#else
+ 	u32	bsr;		/* 0x74 Select B Register */
++#endif
+ 	u32	absr;		/* 0x78 AB Select Status Register */
++#if defined(CONFIG_AT91SAM9X5)
++	u32 reserved5;
++	u32 ifscdr;	/* 0x80 Input Filter Slow Clock Disable Register */
++	u32 ifscer;	/* 0x84 Input Filter Slow Clock Enable Register */
++	u32 ifscsr;	/* 0x88 Input Filter Slow Clock Status Register */
++	u32 scdr;	/* 0x8C Slow Clock Divider Debouncing Register */
++	u32 ppddr;	/* 0x90 Pad Pull-down Disable Register */
++	u32 ppder;	/* 0x94 Pad Pull-down Enable Register */
++	u32 ppdsr;	/* 0x98 Pad Pull-down Status Register */
++	u32 reserved6;	/*  */
++#else
+ 	u32	reserved5[9];	/*  */
++#endif
+ 	u32	ower;		/* 0xA0 Output Write Enable Register */
+ 	u32	owdr;		/* 0xA4 Output Write Disable Register */
+-	u32	owsr;		/* OxA8 utput Write Status Register */
++	u32	owsr;		/* OxA8 Output Write Status Register */
++#if defined(CONFIG_AT91SAM9X5)
++	u32 reserved7;	/*  */
++	u32 aimer;	/* 0xB0 Additional Interrupt Modes Enable Register */
++	u32 aimdr;	/* 0xB4 Additional Interrupt Modes Disable Register */
++	u32 aimmr;	/* 0xB8 Additional Intterupt Modes Mask Register */
++	u32 reserved8;	/* */
++	u32 esr;		/* 0xC0 Edge Select Register */
++	u32 lsr;		/* 0xC4 Level Select Register */
++	u32 elsr;		/* 0xC8 Edge/Level Status Register */
++	u32 reserved9;	/* 0xCC */
++	u32 fellsr;	/* 0xD0 Falling Edge/Low Level Select Register */
++	u32 rehlsr;	/* 0xD4 Rising Edge/High Level Select Register */
++	u32 frlhsr;	/* 0xD8 Fall/Rise - Low/High Status Register */
++	u32 reserved10[9];	/* */
++	u32 schmitt;	/* 0x100 Schmitt Trigger Register */
++	u32 reserved11[63];
++#else
+ 	u32	reserved6[85];
++#endif
+ } at91_port_t;
+ 
++#define		PIO_SCDR_DIV	(0x3fff <<  0)	/* Slow Clock Divider Mask */
++
+ #if defined(CONFIG_AT91SAM9260) || defined(CONFIG_AT91SAM9261) || \
+ 	defined(CONFIG_AT91SAM9G10) || defined(CONFIG_AT91SAM9G20)
+ #define AT91_PIO_PORTS	3
+@@ -85,6 +125,9 @@ typedef struct at91_port {
+ #elif defined(CONFIG_AT91RM9200) || defined(CONFIG_AT91CAP9) || \
+ 	defined(CONFIG_AT91SAM9RL)
+ #define AT91_PIO_PORTS	4
++#elif defined(CONFIG_AT91SAM9X5)
++#define AT91_PIO_PORTS	4
++#define CPU_HAS_PIO3	1
+ #else
+ #error "Unsupported cpu. Please update at91_pio.h"
+ #endif
+@@ -107,6 +150,13 @@ typedef union at91_pio {
+ #ifdef CONFIG_AT91_GPIO
+ int at91_set_a_periph(unsigned port, unsigned pin, int use_pullup);
+ int at91_set_b_periph(unsigned port, unsigned pin, int use_pullup);
++#if defined(CPU_HAS_PIO3)
++int at91_set_c_periph(unsigned port, unsigned pin, int use_pullup);
++int at91_set_d_periph(unsigned port, unsigned pin, int use_pullup);
++int at91_set_pio_debounce(unsigned port, unsigned pin, int is_on, int div);
++int at91_set_pio_pulldown(unsigned port, unsigned pin, int is_on);
++int at91_set_pio_disable_schmitt_trig(unsigned port, unsigned pin);
++#endif
+ int at91_set_pio_input(unsigned port, unsigned pin, int use_pullup);
+ int at91_set_pio_multi_drive(unsigned port, unsigned pin, int is_on);
+ int at91_set_pio_output(unsigned port, unsigned pin, int value);
+@@ -150,11 +200,37 @@ int at91_get_pio_value(unsigned port, unsigned pin);
+ #define PIO_PUER	0x64	/* Pull-up Enable Register */
+ #define PIO_PUSR	0x68	/* Pull-up Status Register */
+ #define PIO_ASR		0x70	/* Peripheral A Select Register */
++#define PIO_ABCDSR1	0x70	/* Peripheral ABCD Select Register 1[sam9x5] */
+ #define PIO_BSR		0x74	/* Peripheral B Select Register */
++#define PIO_ABCDSR2	0x74	/* Peripheral ABCD Select Register 2[sam9x5] */
+ #define PIO_ABSR	0x78	/* AB Status Register */
++#define PIO_IFSCDR	0x80	/* Input Filter Slow Clock Disable Register */
++#define PIO_IFSCER	0x84	/* Input Filter Slow Clock Enable Register */
++#define PIO_IFSCSR	0x88	/* Input Filter Slow Clock Status Register */
++#define PIO_SCDR	0x8c	/* Slow Clock Divider Debouncing Register */
++#define		PIO_SCDR_DIV	(0x3fff <<  0)	/* Slow Clock Divider Mask */
++#define PIO_PPDDR	0x90	/* Pad Pull-down Disable Register */
++#define PIO_PPDER	0x94	/* Pad Pull-down Enable Register */
++#define PIO_PPDSR	0x98	/* Pad Pull-down Status Register */
+ #define PIO_OWER	0xa0	/* Output Write Enable Register */
+ #define PIO_OWDR	0xa4	/* Output Write Disable Register */
+ #define PIO_OWSR	0xa8	/* Output Write Status Register */
++#define PIO_AIMER	0xb0	/* Additional Interrupt Modes Enable Register */
++#define PIO_AIMDR	0xb4	/* Additional Interrupt Modes Disable Register */
++#define PIO_AIMMR	0xb8	/* Additional Interrupt Modes Mask Register */
++#define PIO_ESR		0xc0	/* Edge Select Register */
++#define PIO_LSR		0xc4	/* Level Select Register */
++#define PIO_ELSR	0xc8	/* Edge/Level Status Register */
++#define PIO_FELLSR	0xd0	/* Falling Edge/Low Level Select Register */
++#define PIO_REHLSR	0xd4	/* Rising Edge/ High Level Select Register */
++#define PIO_FRLHSR	0xd8	/* Fall/Rise - Low/High Status Register */
++#define PIO_SCHMITT	0x100	/* Schmitt Trigger Register */
++
++#define ABCDSR_PERIPH_A	0x0
++#define ABCDSR_PERIPH_B	0x1
++#define ABCDSR_PERIPH_C	0x2
++#define ABCDSR_PERIPH_D	0x3
++
+ #endif
+ 
+ #endif
+diff --git a/arch/arm/include/asm/arch-at91/at91_pmc.h b/arch/arm/include/asm/arch-at91/at91_pmc.h
+index 5b1a85d..3b55db6 100644
+--- a/arch/arm/include/asm/arch-at91/at91_pmc.h
++++ b/arch/arm/include/asm/arch-at91/at91_pmc.h
+@@ -88,6 +88,7 @@ typedef struct at91_pmc {
+ #define AT91_PMC_MCKR_PRES_32		0x00000014
+ #define AT91_PMC_MCKR_PRES_64		0x00000018
+ #define AT91_PMC_MCKR_PRES_MASK		0x0000001C
++#define AT91_PMC_MCKR_PRES_9X5_MASK	0x00000070
+ 
+ #define AT91_PMC_MCKR_MDIV_1		0x00000000
+ #define AT91_PMC_MCKR_MDIV_2		0x00000100
+diff --git a/arch/arm/include/asm/arch-at91/at91sam9_matrix.h b/arch/arm/include/asm/arch-at91/at91sam9_matrix.h
+index 6d97189..b9a93b0 100644
+--- a/arch/arm/include/asm/arch-at91/at91sam9_matrix.h
++++ b/arch/arm/include/asm/arch-at91/at91sam9_matrix.h
+@@ -23,6 +23,8 @@
+ #include <asm/arch/at91cap9_matrix.h>
+ #elif defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45)
+ #include <asm/arch/at91sam9g45_matrix.h>
++#elif defined(CONFIG_AT91SAM9X5)
++#include <asm/arch/at91sam9x5_matrix.h>
+ #else
+ #error "Unsupported AT91SAM9/CAP9 processor"
+ #endif
+diff --git a/arch/arm/include/asm/arch-at91/at91sam9x5.h b/arch/arm/include/asm/arch-at91/at91sam9x5.h
+new file mode 100644
+index 0000000..a6bd7ca
+--- /dev/null
++++ b/arch/arm/include/asm/arch-at91/at91sam9x5.h
+@@ -0,0 +1,227 @@
++/*
++ * Chip-specific header file for the AT91SAM9x5 family
++ *
++ *  Copyright (C) 2009-2010 Atmel Corporation.
++ *
++ * Common definitions.
++ * Based on AT91SAM9x5 preliminary datasheet.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#ifndef AT91SAM9X5_H
++#define AT91SAM9X5_H
++
++/*
++ * Peripheral identifiers/interrupts.
++ */
++#define AT91_ID_FIQ	0	/* Advanced Interrupt Controller (FIQ) */
++#define AT91_ID_SYS	1	/* System Controller Interrupt */
++
++#define AT91SAM9X5_ID_FIQ	0	/* Advanced Interrupt Controller (FIQ) */
++#define AT91SAM9X5_ID_SYS	1	/* System Controller Interrupt */
++#define AT91SAM9X5_ID_PIOAB	2	/* Parallel I/O Controller A and B */
++#define AT91SAM9X5_ID_PIOCD	3	/* Parallel I/O Controller C and D */
++#define AT91SAM9X5_ID_SMD	4	/* SMD Soft Modem (SMD) */
++#define AT91SAM9X5_ID_USART0	5	/* USART 0 */
++#define AT91SAM9X5_ID_USART1	6	/* USART 1 */
++#define AT91SAM9X5_ID_USART2	7	/* USART 2 */
++#define AT91SAM9X5_ID_TWI0	9	/* Two-Wire Interface 0 */
++#define AT91SAM9X5_ID_TWI1	10	/* Two-Wire Interface 1 */
++#define AT91SAM9X5_ID_TWI2	11	/* Two-Wire Interface 2 */
++#define AT91SAM9X5_ID_HSMCI0	12	/* High Speed Multimedia Card Interface 0 */
++#define AT91SAM9X5_ID_SPI0	13	/* Serial Peripheral Interface 0 */
++#define AT91SAM9X5_ID_SPI1	14	/* Serial Peripheral Interface 1 */
++#define AT91SAM9X5_ID_UART0	15	/* UART 0 */
++#define AT91SAM9X5_ID_UART1	16	/* UART 1 */
++#define AT91SAM9X5_ID_TC01	17	/* Timer Counter 0, 1, 2, 3, 4 and 5 */
++#define AT91SAM9X5_ID_PWM	18	/* Pulse Width Modulation Controller */
++#define AT91SAM9X5_ID_ADC	19	/* ADC Controller */
++#define AT91SAM9X5_ID_DMAC0	20	/* DMA Controller 0 */
++#define AT91SAM9X5_ID_DMAC1	21	/* DMA Controller 1 */
++#define AT91SAM9X5_ID_UHPHS	22	/* USB Host High Speed */
++#define AT91SAM9X5_ID_UDPHS	23	/* USB Device High Speed */
++#define AT91SAM9X5_ID_EMAC0	24	/* Ethernet MAC0 */
++#define AT91SAM9X5_ID_LCDC	25	/* LCD Controller */
++#define AT91SAM9X5_ID_HSMCI1	26	/* High Speed Multimedia Card Interface 1 */
++#define AT91SAM9X5_ID_EMAC1	27	/* Ethernet MAC1 */
++#define AT91SAM9X5_ID_SSC	28	/* Synchronous Serial Controller */
++#define AT91SAM9X5_ID_IRQ	31	/* Advanced Interrupt Controller */
++
++
++#define AT91_EMAC0_BASE		0xf802c000
++#define AT91_EMAC1_BASE		0xf8030000
++#define AT91_SMC_BASE		0xffffea00
++#define AT91_MATRIX_BASE	0xffffde00
++#define AT91_PIO_BASE		0xfffff400
++#define AT91_PMC_BASE		0xfffffc00
++#define AT91_RSTC_BASE		0xfffffe00
++#define AT91_PIT_BASE		0xfffffe30
++#define AT91_WDT_BASE		0xfffffe40
++
++/* 9x5 series chip id definitions */
++#define ARCH_ID_AT91SAM9X5	0x819a05a0
++#define ARCH_EXID_AT91SAM9G15	0x00000000
++#define ARCH_EXID_AT91SAM9G35	0x00000001
++#define ARCH_EXID_AT91SAM9X35	0x00000002
++#define ARCH_EXID_AT91SAM9G25	0x00000003
++#define ARCH_EXID_AT91SAM9X25	0x00000004
++
++#define cpu_is_at91sam9x5()	(get_chip_id() == ARCH_ID_AT91SAM9X5)
++#define cpu_is_at91sam9g15()	(cpu_is_at91sam9x5() && \
++			(get_extension_chip_id() == ARCH_EXID_AT91SAM9G15))
++#define cpu_is_at91sam9g25()	(cpu_is_at91sam9x5() && \
++			(get_extension_chip_id() == ARCH_EXID_AT91SAM9G25))
++#define cpu_is_at91sam9g35()	(cpu_is_at91sam9x5() && \
++			(get_extension_chip_id() == ARCH_EXID_AT91SAM9G35))
++#define cpu_is_at91sam9x25()	(cpu_is_at91sam9x5() && \
++			(get_extension_chip_id() == ARCH_EXID_AT91SAM9X25))
++#define cpu_is_at91sam9x35()	(cpu_is_at91sam9x5() && \
++			(get_extension_chip_id() == ARCH_EXID_AT91SAM9X35))
++
++#ifdef CONFIG_AT91_LEGACY
++/*
++ * User Peripheral physical base addresses.
++ */
++#define AT91SAM9X5_BASE_SPI0		0xf0000000
++#define AT91SAM9X5_BASE_SPI1		0xf0004000
++#define AT91SAM9X5_BASE_HSMCI0		0xf0008000
++#define AT91SAM9X5_BASE_HSMCI1		0xf000c000
++#define AT91SAM9X5_BASE_SSC		0xf0010000
++#define AT91SAM9X5_BASE_CAN0		0xf8000000
++#define AT91SAM9X5_BASE_CAN1		0xf8004000
++#define AT91SAM9X5_BASE_TC0		0xf8008000
++#define AT91SAM9X5_BASE_TC1		0xf8008040
++#define AT91SAM9X5_BASE_TC2		0xf8008080
++#define AT91SAM9X5_BASE_TC3		0xf800c000
++#define AT91SAM9X5_BASE_TC4		0xf800c040
++#define AT91SAM9X5_BASE_TC5		0xf800c080
++#define AT91SAM9X5_BASE_TWI0		0xf8010000
++#define AT91SAM9X5_BASE_TWI1		0xf8014000
++#define AT91SAM9X5_BASE_TWI2		0xf8018000
++#define AT91SAM9X5_BASE_USART0		0xf801c000
++#define AT91SAM9X5_BASE_USART1		0xf8020000
++#define AT91SAM9X5_BASE_USART2		0xf8024000
++#define AT91SAM9X5_BASE_USART3		0xf8028000
++#define AT91SAM9X5_BASE_EMAC0		0xf802c000
++#define AT91SAM9X5_BASE_EMAC1		0xf8030000
++#define AT91SAM9X5_BASE_PWM		0xf8034000
++#define AT91SAM9X5_BASE_LCDC		0xf8038000
++#define AT91SAM9X5_BASE_UDPHS		0xf803c000
++#define AT91SAM9X5_BASE_UART0		0xf8040000
++#define AT91SAM9X5_BASE_UART1		0xf8044000
++#define AT91SAM9X5_BASE_ISI		0xf8048000
++#define AT91SAM9X5_BASE_ADC		0xf804c000
++#define AT91_BASE_SYS			0xffffc000
++
++/*
++ * System Peripherals (offset from AT91_BASE_SYS)
++ */
++#define AT91_MATRIX	(0xffffde00 - AT91_BASE_SYS)
++#define AT91_PMECC	(0xffffe000 - AT91_BASE_SYS)
++#define AT91_PMERRLOC	(0xffffe600 - AT91_BASE_SYS)
++#define AT91_DDRSDRC	(0xffffe800 - AT91_BASE_SYS)
++#define AT91_SMC	(0xffffea00 - AT91_BASE_SYS)
++#define AT91_DMAC0	(0xffffec00 - AT91_BASE_SYS)
++#define AT91_DMAC1	(0xffffee00 - AT91_BASE_SYS)
++#define AT91_AIC	(0xfffff000 - AT91_BASE_SYS)
++#define AT91_DBGU	(0xfffff200 - AT91_BASE_SYS)
++#define AT91_PIOA	(0xfffff400 - AT91_BASE_SYS)
++#define AT91_PIOB	(0xfffff600 - AT91_BASE_SYS)
++#define AT91_PIOC	(0xfffff800 - AT91_BASE_SYS)
++#define AT91_PIOD	(0xfffffa00 - AT91_BASE_SYS)
++#define AT91_PMC	(0xfffffc00 - AT91_BASE_SYS)
++#define AT91_RSTC	(0xfffffe00 - AT91_BASE_SYS)
++#define AT91_SHDWC	(0xfffffe10 - AT91_BASE_SYS)
++#define AT91_PIT	(0xfffffe30 - AT91_BASE_SYS)
++#define AT91_WDT	(0xfffffe40 - AT91_BASE_SYS)
++#define AT91_GPBR	(0xfffffe60 - AT91_BASE_SYS)
++#define AT91_RTC	(0xfffffeb0 - AT91_BASE_SYS)
++
++#define AT91_USART0	AT91SAM9X5_BASE_US0
++#define AT91_USART1	AT91SAM9X5_BASE_US1
++#define AT91_USART2	AT91SAM9X5_BASE_US2
++#define AT91_USART3	AT91SAM9X5_BASE_US3
++#endif
++
++/*
++ * Internal Memory.
++ */
++#define AT91SAM9X5_SRAM_BASE	0x00300000	/* Internal SRAM base address */
++#define AT91SAM9X5_SRAM_SIZE	SZ_32K		/* Internal SRAM size (32Kb) */
++
++#define AT91SAM9X5_ROM_BASE	0x00100000	/* Internal ROM base address */
++#define AT91SAM9X5_ROM_SIZE	SZ_1M		/* Internal ROM size (1M) */
++
++#define AT91SAM9X5_SMD_BASE	0x00400000	/* SMD Controller */
++#define AT91SAM9X5_UDPHS_FIFO	0x00500000	/* USB Device HS controller */
++#define AT91SAM9X5_OHCI_BASE	0x00600000	/* USB Host controller (OHCI) */
++#define AT91SAM9X5_EHCI_BASE	0x00700000	/* USB Host controller (EHCI) */
++
++#define CONFIG_DRAM_BASE	AT91_CHIPSELECT_1
++
++#define CONSISTENT_DMA_SIZE	SZ_4M
++
++/*
++ * DMAC0 peripheral identifiers
++ * for hardware handshaking interface
++ */
++#define AT_DMA_ID_MCI0		 0
++#define AT_DMA_ID_SPI0_TX	 1
++#define AT_DMA_ID_SPI0_RX	 2
++#define AT_DMA_ID_USART0_TX	 3
++#define AT_DMA_ID_USART0_RX	 4
++#define AT_DMA_ID_USART1_TX	 5
++#define AT_DMA_ID_USART1_RX	 6
++#define AT_DMA_ID_TWI0_TX	 7
++#define AT_DMA_ID_TWI0_RX	 8
++#define AT_DMA_ID_TWI2_TX	 9
++#define AT_DMA_ID_TWI2_RX	10
++#define AT_DMA_ID_UART0_TX	11
++#define AT_DMA_ID_UART0_RX	12
++#define AT_DMA_ID_SSC_TX	13
++#define AT_DMA_ID_SSC_RX	14
++
++/*
++ * DMAC1 peripheral identifiers
++ * for hardware handshaking interface
++ */
++#define AT_DMA_ID_MCI1		 0
++#define AT_DMA_ID_SPI1_TX	 1
++#define AT_DMA_ID_SPI1_RX	 2
++#define AT_DMA_ID_SMD_TX	 3
++#define AT_DMA_ID_SMD_RX	 4
++#define AT_DMA_ID_TWI1_TX	 5
++#define AT_DMA_ID_TWI1_RX	 6
++#define AT_DMA_ID_ADC_RX	 7
++#define AT_DMA_ID_DBGU_TX	 8
++#define AT_DMA_ID_DBGU_RX	 9
++#define AT_DMA_ID_UART1_TX	10
++#define AT_DMA_ID_UART1_RX	11
++#define AT_DMA_ID_USART2_TX	12
++#define AT_DMA_ID_USART2_RX	13
++
++/*
++ * Cpu Name
++ */
++#define CONFIG_SYS_AT91_G15_CPU_NAME	"AT91SAM9G15"
++#define CONFIG_SYS_AT91_G25_CPU_NAME	"AT91SAM9G25"
++#define CONFIG_SYS_AT91_G35_CPU_NAME	"AT91SAM9G35"
++#define CONFIG_SYS_AT91_X25_CPU_NAME	"AT91SAM9X25"
++#define CONFIG_SYS_AT91_X35_CPU_NAME	"AT91SAM9X35"
++#define CONFIG_SYS_AT91_UNKNOWN_CPU		"Unknown CPU type"
++
++/*
++ * at91sam9x5 specific prototypes
++ */
++unsigned int get_chip_id(void);
++unsigned int get_extension_chip_id(void);
++unsigned int has_emac1(void);
++unsigned int has_emac0(void);
++unsigned int has_lcdc(void);
++char *get_cpu_name(void);
++
++#endif
+diff --git a/arch/arm/include/asm/arch-at91/at91sam9x5_matrix.h b/arch/arm/include/asm/arch-at91/at91sam9x5_matrix.h
+new file mode 100644
+index 0000000..c3e6b64
+--- /dev/null
++++ b/arch/arm/include/asm/arch-at91/at91sam9x5_matrix.h
+@@ -0,0 +1,136 @@
++/*
++ * Matrix-centric header file for the AT91SAM9x5 family
++ *
++ *  Copyright (C) 2009-2010 Atmel Corporation.
++ *
++ * Memory Controllers (MATRIX, EBI) - System peripherals registers.
++ * Based on AT91SAM9x5 preliminary datasheet.
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#ifndef AT91SAM9X5_MATRIX_H
++#define AT91SAM9X5_MATRIX_H
++
++#define AT91_MATRIX_MCFG0	(AT91_MATRIX + 0x00)	/* Master Configuration Register 0 */
++#define AT91_MATRIX_MCFG1	(AT91_MATRIX + 0x04)	/* Master Configuration Register 1 */
++#define AT91_MATRIX_MCFG2	(AT91_MATRIX + 0x08)	/* Master Configuration Register 2 */
++#define AT91_MATRIX_MCFG3	(AT91_MATRIX + 0x0C)	/* Master Configuration Register 3 */
++#define AT91_MATRIX_MCFG4	(AT91_MATRIX + 0x10)	/* Master Configuration Register 4 */
++#define AT91_MATRIX_MCFG5	(AT91_MATRIX + 0x14)	/* Master Configuration Register 5 */
++#define AT91_MATRIX_MCFG6	(AT91_MATRIX + 0x18)	/* Master Configuration Register 6 */
++#define AT91_MATRIX_MCFG7	(AT91_MATRIX + 0x1C)	/* Master Configuration Register 7 */
++#define AT91_MATRIX_MCFG8	(AT91_MATRIX + 0x20)	/* Master Configuration Register 8 */
++#define AT91_MATRIX_MCFG9	(AT91_MATRIX + 0x24)	/* Master Configuration Register 9 */
++#define AT91_MATRIX_MCFG10	(AT91_MATRIX + 0x28)	/* Master Configuration Register 10 */
++#define AT91_MATRIX_MCFG11	(AT91_MATRIX + 0x2C)	/* Master Configuration Register 11 */
++#define		AT91_MATRIX_ULBT	(7 << 0)	/* Undefined Length Burst Type */
++#define			AT91_MATRIX_ULBT_INFINITE	(0 << 0)
++#define			AT91_MATRIX_ULBT_SINGLE		(1 << 0)
++#define			AT91_MATRIX_ULBT_FOUR		(2 << 0)
++#define			AT91_MATRIX_ULBT_EIGHT		(3 << 0)
++#define			AT91_MATRIX_ULBT_SIXTEEN	(4 << 0)
++#define			AT91_MATRIX_ULBT_THIRTYTWO	(5 << 0)
++#define			AT91_MATRIX_ULBT_SIXTYFOUR	(6 << 0)
++#define			AT91_MATRIX_ULBT_128		(7 << 0)
++
++#define AT91_MATRIX_SCFG0	(AT91_MATRIX + 0x40)	/* Slave Configuration Register 0 */
++#define AT91_MATRIX_SCFG1	(AT91_MATRIX + 0x44)	/* Slave Configuration Register 1 */
++#define AT91_MATRIX_SCFG2	(AT91_MATRIX + 0x48)	/* Slave Configuration Register 2 */
++#define AT91_MATRIX_SCFG3	(AT91_MATRIX + 0x4C)	/* Slave Configuration Register 3 */
++#define AT91_MATRIX_SCFG4	(AT91_MATRIX + 0x50)	/* Slave Configuration Register 4 */
++#define AT91_MATRIX_SCFG5	(AT91_MATRIX + 0x54)	/* Slave Configuration Register 5 */
++#define AT91_MATRIX_SCFG6	(AT91_MATRIX + 0x58)	/* Slave Configuration Register 6 */
++#define AT91_MATRIX_SCFG7	(AT91_MATRIX + 0x5C)	/* Slave Configuration Register 7 */
++#define AT91_MATRIX_SCFG8	(AT91_MATRIX + 0x60)	/* Slave Configuration Register 8 */
++#define		AT91_MATRIX_SLOT_CYCLE		(0x1ff << 0)	/* Maximum Number of Allowed Cycles for a Burst */
++#define		AT91_MATRIX_DEFMSTR_TYPE	(3    << 16)	/* Default Master Type */
++#define			AT91_MATRIX_DEFMSTR_TYPE_NONE	(0 << 16)
++#define			AT91_MATRIX_DEFMSTR_TYPE_LAST	(1 << 16)
++#define			AT91_MATRIX_DEFMSTR_TYPE_FIXED	(2 << 16)
++#define		AT91_MATRIX_FIXED_DEFMSTR	(0xf  << 18)	/* Fixed Index of Default Master */
++
++#define AT91_MATRIX_PRAS0	(AT91_MATRIX + 0x80)	/* Priority Register A for Slave 0 */
++#define AT91_MATRIX_PRBS0	(AT91_MATRIX + 0x84)	/* Priority Register B for Slave 0 */
++#define AT91_MATRIX_PRAS1	(AT91_MATRIX + 0x88)	/* Priority Register A for Slave 1 */
++#define AT91_MATRIX_PRBS1	(AT91_MATRIX + 0x8C)	/* Priority Register B for Slave 1 */
++#define AT91_MATRIX_PRAS2	(AT91_MATRIX + 0x90)	/* Priority Register A for Slave 2 */
++#define AT91_MATRIX_PRBS2	(AT91_MATRIX + 0x94)	/* Priority Register B for Slave 2 */
++#define AT91_MATRIX_PRAS3	(AT91_MATRIX + 0x98)	/* Priority Register A for Slave 3 */
++#define AT91_MATRIX_PRBS3	(AT91_MATRIX + 0x9C)	/* Priority Register B for Slave 3 */
++#define AT91_MATRIX_PRAS4	(AT91_MATRIX + 0xA0)	/* Priority Register A for Slave 4 */
++#define AT91_MATRIX_PRBS4	(AT91_MATRIX + 0xA4)	/* Priority Register B for Slave 4 */
++#define AT91_MATRIX_PRAS5	(AT91_MATRIX + 0xA8)	/* Priority Register A for Slave 5 */
++#define AT91_MATRIX_PRBS5	(AT91_MATRIX + 0xAC)	/* Priority Register B for Slave 5 */
++#define AT91_MATRIX_PRAS6	(AT91_MATRIX + 0xB0)	/* Priority Register A for Slave 6 */
++#define AT91_MATRIX_PRBS6	(AT91_MATRIX + 0xB4)	/* Priority Register B for Slave 6 */
++#define AT91_MATRIX_PRAS7	(AT91_MATRIX + 0xB8)	/* Priority Register A for Slave 7 */
++#define AT91_MATRIX_PRBS7	(AT91_MATRIX + 0xBC)	/* Priority Register B for Slave 7 */
++#define AT91_MATRIX_PRAS8	(AT91_MATRIX + 0xC0)	/* Priority Register A for Slave 8 */
++#define AT91_MATRIX_PRBS8	(AT91_MATRIX + 0xC4)	/* Priority Register B for Slave 8 */
++#define		AT91_MATRIX_M0PR		(3 << 0)	/* Master 0 Priority */
++#define		AT91_MATRIX_M1PR		(3 << 4)	/* Master 1 Priority */
++#define		AT91_MATRIX_M2PR		(3 << 8)	/* Master 2 Priority */
++#define		AT91_MATRIX_M3PR		(3 << 12)	/* Master 3 Priority */
++#define		AT91_MATRIX_M4PR		(3 << 16)	/* Master 4 Priority */
++#define		AT91_MATRIX_M5PR		(3 << 20)	/* Master 5 Priority */
++#define		AT91_MATRIX_M6PR		(3 << 24)	/* Master 6 Priority */
++#define		AT91_MATRIX_M7PR		(3 << 28)	/* Master 7 Priority */
++#define		AT91_MATRIX_M8PR		(3 << 0)	/* Master 8 Priority (in Register B) */
++#define		AT91_MATRIX_M9PR		(3 << 4)	/* Master 9 Priority (in Register B) */
++#define		AT91_MATRIX_M10PR		(3 << 8)	/* Master 10 Priority (in Register B) */
++#define		AT91_MATRIX_M11PR		(3 << 12)	/* Master 11 Priority (in Register B) */
++
++#define AT91_MATRIX_MRCR	(AT91_MATRIX + 0x100)	/* Master Remap Control Register */
++#define		AT91_MATRIX_RCB0		(1 << 0)	/* Remap Command for AHB Master 0 (ARM926EJ-S Instruction Master) */
++#define		AT91_MATRIX_RCB1		(1 << 1)	/* Remap Command for AHB Master 1 (ARM926EJ-S Data Master) */
++#define		AT91_MATRIX_RCB2		(1 << 2)
++#define		AT91_MATRIX_RCB3		(1 << 3)
++#define		AT91_MATRIX_RCB4		(1 << 4)
++#define		AT91_MATRIX_RCB5		(1 << 5)
++#define		AT91_MATRIX_RCB6		(1 << 6)
++#define		AT91_MATRIX_RCB7		(1 << 7)
++#define		AT91_MATRIX_RCB8		(1 << 8)
++#define		AT91_MATRIX_RCB9		(1 << 9)
++#define		AT91_MATRIX_RCB10		(1 << 10)
++#define		AT91_MATRIX_RCB11		(1 << 11)
++
++#define AT91_MATRIX_EBICSA	(AT91_MATRIX + 0x120)	/* EBI Chip Select Assignment Register */
++#define		AT91_MATRIX_EBI_CS1A		(1 << 1)	/* Chip Select 1 Assignment */
++#define			AT91_MATRIX_EBI_CS1A_SMC		(0 << 1)
++#define			AT91_MATRIX_EBI_CS1A_SDRAMC		(1 << 1)
++#define		AT91_MATRIX_EBI_CS3A		(1 << 3)	/* Chip Select 3 Assignment */
++#define			AT91_MATRIX_EBI_CS3A_SMC		(0 << 3)
++#define			AT91_MATRIX_EBI_CS3A_SMC_NANDFLASH	(1 << 3)
++#define		AT91_MATRIX_EBI_DBPUC		(1 << 8)	/* Data Bus Pull-up Configuration */
++#define			AT91_MATRIX_EBI_DBPU_ON			(0 << 8)
++#define			AT91_MATRIX_EBI_DBPU_OFF		(1 << 8)
++#define		AT91_MATRIX_EBI_DBPDC		(1 << 9)	/* Data Bus Pull-up Configuration */
++#define			AT91_MATRIX_EBI_DBPD_ON			(0 << 9)
++#define			AT91_MATRIX_EBI_DBPD_OFF		(1 << 9)
++#define		AT91_MATRIX_EBI_EBI_IOSR	(1 << 17)	/* EBI I/O slew rate selection */
++#define			AT91_MATRIX_EBI_EBI_IOSR_REDUCED	(0 << 17)
++#define			AT91_MATRIX_EBI_EBI_IOSR_NORMAL		(1 << 17)
++#define		AT91_MATRIX_NFD0_SELECT		(1 << 24)	/* NAND Flash Data Bus Selection */
++#define			AT91_MATRIX_NFD0_ON_D0			(0 << 24)
++#define			AT91_MATRIX_NFD0_ON_D16			(1 << 24)
++#define		AT91_MATRIX_DDR_MP_EN		(1 << 25)	/* DDR Multi-port Enable */
++#define			AT91_MATRIX_MP_OFF			(0 << 25)
++#define			AT91_MATRIX_MP_ON			(1 << 25)
++
++#define AT91_MATRIX_WPMR	(AT91_MATRIX + 0x1E4)	/* Write Protect Mode Register */
++#define		AT91_MATRIX_WPMR_WPEN		(1 << 0)	/* Write Protect ENable */
++#define			AT91_MATRIX_WPMR_WP_WPDIS		(0 << 0)
++#define			AT91_MATRIX_WPMR_WP_WPEN		(1 << 0)
++#define		AT91_MATRIX_WPMR_WPKEY		(0xFFFFFF << 8)	/* Write Protect KEY */
++
++#define AT91_MATRIX_WPSR	(AT91_MATRIX + 0x1E8)	/* Write Protect Status Register */
++#define		AT91_MATRIX_WPSR_WPVS		(1 << 0)	/* Write Protect Violation Status */
++#define			AT91_MATRIX_WPSR_NO_WPV		(0 << 0)
++#define			AT91_MATRIX_WPSR_WPV		(1 << 0)
++#define		AT91_MATRIX_WPSR_WPVSRC		(0xFFFF << 8)	/* Write Protect Violation Source */
++
++#endif
+diff --git a/arch/arm/include/asm/arch-at91/hardware.h b/arch/arm/include/asm/arch-at91/hardware.h
+index 4ddb315..44020bd 100644
+--- a/arch/arm/include/asm/arch-at91/hardware.h
++++ b/arch/arm/include/asm/arch-at91/hardware.h
+@@ -43,6 +43,9 @@
+ #define AT91_BASE_SPI   AT91SAM9G45_BASE_SPI0
+ #define AT91_ID_UHP     AT91SAM9G45_ID_UHPHS
+ #define AT91_PMC_UHP    AT91SAM926x_PMC_UHP
++#elif defined(CONFIG_AT91SAM9X5)
++#include <asm/arch/at91sam9x5.h>
++#define AT91_BASE_SPI   AT91SAM9X5_BASE_SPI0
+ #elif defined(CONFIG_AT91CAP9)
+ #include <asm/arch/at91cap9.h>
+ #define AT91_BASE_SPI	AT91CAP9_BASE_SPI0
+diff --git a/arch/arm/include/asm/arch-at91/one_wire_info.h b/arch/arm/include/asm/arch-at91/one_wire_info.h
+new file mode 100644
+index 0000000..569bf39
+--- /dev/null
++++ b/arch/arm/include/asm/arch-at91/one_wire_info.h
+@@ -0,0 +1,86 @@
++/*
++ * Definition of One Wire information
++ *
++ * One Wire chip found on at91sam9x5 boards:
++ * 	- CPU module
++ * 	- EK mother board
++ * 	- Display Module
++ *
++ *  Copyright (C) 2011 ATMEL Corporation,
++ *  			Nicolas Ferre <nicolas.ferre@atmel.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#ifndef __ASM_ARCH_ONEWIREINFO_H
++#define __ASM_ARCH_ONEWIREINFO_H
++
++#if defined(CONFIG_LOAD_ONE_WIRE_INFO)
++
++/* OWI sands for One Wire Information
++ * The information comes form the 1-wire component on each board
++ * and is encoded in ATAGs: both system_serial_low and system_rev
++ * board revision encoding
++ *
++ *  ATAG_SN    lower 32 bits
++ *     0-4   cpu_module_board_id         5 bits
++ *     5-9   cpu_module_vendor_id        5 bits
++ *     10-14 display_module_board_id     5 bits
++ *     15-19 display_module_vendor_id    5 bits
++ *     20-24 mother_board_id             5 bits
++ *     25-29 mother_board_vendor_id      5 bits
++ *     30-31 reserved for future use     2 bits
++ *
++ * rev: stands for revision code letter: the 'B' in "B1" revision code for
++ *      instance coded as a increment from 'A' starting at 0x0: 0x0 means 'A',
++ *      0x1 means 'B', etc.
++ *
++ * rev_id: stands for revision code identifier ;  it is a number: the '1' in
++ *         "B1" revision code for instance: coded as a increment from '0'
++ *         starting at 0x0: 0x0 means '0', 0x1 means '1', etc.)
++ *
++ *  ATAG_REV
++ *     0-4   cpu_module_board_rev        5 bits
++ *     5-9   display_module_board_rev    5 bits
++ *     10-14 mother_module_board_rev     5 bits
++ *     15-17 cpu_module_board_rev_id     3 bits
++ *     18-20 display_module_board_rev_id 3 bits
++ *     21-23 mother_module_board_rev_id  3 bits
++ *     24-31 reserved for future use     8 bits
++ */
++
++#define CM_REV_OFFSET		0
++#define CM_REV_SIZE		5
++#define CM_REV_ID_OFFSET	15
++#define CM_REV_ID_SIZE		3
++#define DM_REV_OFFSET		5
++#define DM_REV_SIZE		5
++#define DM_REV_ID_OFFSET	18
++#define DM_REV_ID_SIZE		3
++#define EK_REV_OFFSET		10
++#define EK_REV_SIZE		5
++#define EK_REV_ID_OFFSET	21
++#define EK_REV_ID_SIZE		3
++
++/* Bit manipulation macros */
++#define OWI_BIT(name) \
++        (1 << name##_OFFSET)
++#define OWI_BF(name,value) \
++        (((value) & ((1 << name##_SIZE) - 1)) << name##_OFFSET)
++#define OWI_BFEXT(name,value) \
++        (((value) >> name##_OFFSET) & ((1 << name##_SIZE) - 1))
++#define OWI_BFINS(name,value,old) \
++        ( ((old) & ~(((1 << name##_SIZE) - 1) << name##_OFFSET)) \
++          | SPI_BF(name,value))
++
++#define cm_rev(rev)	OWI_BFEXT(CM_REV, (rev))
++#define dm_rev(rev)	OWI_BFEXT(DM_REV, (rev))
++#define ek_rev(rev)	OWI_BFEXT(EK_REV, (rev))
++
++#define cm_is_revB(rev) (cm_rev(rev) == ('B' - 'A'))
++
++#endif
++#endif /* __ASM_ARCH_ONEWIREINFO_H */
+diff --git a/arch/arm/include/asm/mach-types.h b/arch/arm/include/asm/mach-types.h
+index 940d814..9f2bbb3 100644
+--- a/arch/arm/include/asm/mach-types.h
++++ b/arch/arm/include/asm/mach-types.h
+@@ -1990,7 +1990,7 @@ extern unsigned int __machine_arch_type;
+ #define MACH_TYPE_BENZINA              2003
+ #define MACH_TYPE_BLAZE                2004
+ #define MACH_TYPE_LINKSTATION_LS_HGL   2005
+-#define MACH_TYPE_HTCVENUS             2006
++#define MACH_TYPE_HTCKOVSKY            2006
+ #define MACH_TYPE_SONY_PRS505          2007
+ #define MACH_TYPE_HANLIN_V3            2008
+ #define MACH_TYPE_SAPPHIRA             2009
+@@ -2800,68 +2800,7 @@ extern unsigned int __machine_arch_type;
+ #define MACH_TYPE_SNAPPER9G45          2817
+ #define MACH_TYPE_TAM3517              2818
+ #define MACH_TYPE_PDC100               2819
+-#define MACH_TYPE_EUKREA_CPUIMX25      2820
+-#define MACH_TYPE_EUKREA_CPUIMX35      2821
+-#define MACH_TYPE_EUKREA_CPUIMX51SD    2822
+-#define MACH_TYPE_EUKREA_CPUIMX51      2823
+-#define MACH_TYPE_P565                 2824
+-#define MACH_TYPE_ACER_A4              2825
+-#define MACH_TYPE_DAVINCI_DM368_BIP    2826
+-#define MACH_TYPE_ESHARE               2827
+-#define MACH_TYPE_HW_OMAPL138_EUROPA   2828
+-#define MACH_TYPE_WLBARGN              2829
+-#define MACH_TYPE_BM170                2830
+-#define MACH_TYPE_NETSPACE_MINI_V2     2831
+-#define MACH_TYPE_NETSPACE_PLUG_V2     2832
+-#define MACH_TYPE_SIEMENS_L1           2833
+-#define MACH_TYPE_ELV_LCU1             2834
+-#define MACH_TYPE_MCU1                 2835
+-#define MACH_TYPE_OMAP3_TAO3530        2836
+-#define MACH_TYPE_OMAP3_PCUTOUCH       2837
+-#define MACH_TYPE_SMDKC210             2838
+-#define MACH_TYPE_OMAP3_BRAILLO        2839
+-#define MACH_TYPE_SPYPLUG              2840
+-#define MACH_TYPE_GINGER               2841
+-#define MACH_TYPE_TNY_T3530            2842
+-#define MACH_TYPE_PCA102               2843
+-#define MACH_TYPE_SPADE                2844
+-#define MACH_TYPE_MXC25_TOPAZ          2845
+-#define MACH_TYPE_T5325                2846
+-#define MACH_TYPE_GW2361               2847
+-#define MACH_TYPE_ELOG                 2848
+-#define MACH_TYPE_INCOME               2849
+-#define MACH_TYPE_BCM589X              2850
+-#define MACH_TYPE_ETNA                 2851
+-#define MACH_TYPE_HAWKS                2852
+-#define MACH_TYPE_MESON                2853
+-#define MACH_TYPE_XSBASE255            2854
+-#define MACH_TYPE_PVM2030              2855
+-#define MACH_TYPE_MIOA502              2856
+-#define MACH_TYPE_VVBOX_SDORIG2        2857
+-#define MACH_TYPE_VVBOX_SDLITE2        2858
+-#define MACH_TYPE_VVBOX_SDPRO4         2859
+-#define MACH_TYPE_HTC_SPV_M700         2860
+-#define MACH_TYPE_MX257SX              2861
+-#define MACH_TYPE_GONI                 2862
+-#define MACH_TYPE_MSM8X55_SVLTE_FFA    2863
+-#define MACH_TYPE_MSM8X55_SVLTE_SURF   2864
+-#define MACH_TYPE_QUICKSTEP            2865
+-#define MACH_TYPE_DMW96                2866
+-#define MACH_TYPE_HAMMERHEAD           2867
+-#define MACH_TYPE_TRIDENT              2868
+-#define MACH_TYPE_LIGHTNING            2869
+-#define MACH_TYPE_ICONNECT             2870
+-#define MACH_TYPE_AUTOBOT              2871
+-#define MACH_TYPE_COCONUT              2872
+-#define MACH_TYPE_DURIAN               2873
+-#define MACH_TYPE_CAYENNE              2874
+-#define MACH_TYPE_FUJI                 2875
+-#define MACH_TYPE_SYNOLOGY_6282        2876
+-#define MACH_TYPE_EM1SY                2877
+-#define MACH_TYPE_M502                 2878
+-#define MACH_TYPE_MATRIX518            2879
+-#define MACH_TYPE_TINY_GURNARD         2880
+-#define MACH_TYPE_SPEAR1310            2881
++#define MACH_TYPE_AT91SAM9X5EK         3373
+ 
+ #ifdef CONFIG_ARCH_EBSA110
+ # ifdef machine_arch_type
+@@ -18506,9 +18445,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_HYNET_INE
+ # endif
+-# define machine_is_argonst_foundation()	(machine_arch_type == MACH_TYPE_HYNET_INE)
++# define machine_is_hynet_ine()	(machine_arch_type == MACH_TYPE_HYNET_INE)
+ #else
+-# define machine_is_argonst_foundation()	(0)
++# define machine_is_hynet_ine()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_HYNET_APP
+@@ -24002,9 +23941,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_MARVELL_NEWDB
+ # endif
+-# define machine_is_dove_avng()	(machine_arch_type == MACH_TYPE_MARVELL_NEWDB)
++# define machine_is_marvell_newdb()	(machine_arch_type == MACH_TYPE_MARVELL_NEWDB)
+ #else
+-# define machine_is_dove_avng()	(0)
++# define machine_is_marvell_newdb()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_VANDIHUD
+@@ -26599,14 +26538,14 @@ extern unsigned int __machine_arch_type;
+ # define machine_is_linkstation_ls_hgl()	(0)
+ #endif
+ 
+-#ifdef CONFIG_MACH_HTCVENUS
++#ifdef CONFIG_MACH_HTCKOVSKY
+ # ifdef machine_arch_type
+ #  undef machine_arch_type
+ #  define machine_arch_type	__machine_arch_type
+ # else
+-#  define machine_arch_type	MACH_TYPE_HTCVENUS
++#  define machine_arch_type	MACH_TYPE_HTCKOVSKY
+ # endif
+-# define machine_is_htckovsky()	(machine_arch_type == MACH_TYPE_HTCVENUS)
++# define machine_is_htckovsky()	(machine_arch_type == MACH_TYPE_HTCKOVSKY)
+ #else
+ # define machine_is_htckovsky()	(0)
+ #endif
+@@ -30374,9 +30313,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_OREO
+ # endif
+-# define machine_is_oreo_camera()	(machine_arch_type == MACH_TYPE_OREO)
++# define machine_is_oreo()	(machine_arch_type == MACH_TYPE_OREO)
+ #else
+-# define machine_is_oreo_camera()	(0)
++# define machine_is_oreo()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_SMDK6442
+@@ -31166,9 +31105,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_SIENNA
+ # endif
+-# define machine_is_siena()	(machine_arch_type == MACH_TYPE_SIENNA)
++# define machine_is_sienna()	(machine_arch_type == MACH_TYPE_SIENNA)
+ #else
+-# define machine_is_siena()	(0)
++# define machine_is_sienna()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_HTC_EXCALIBUR_S620
+@@ -32654,9 +32593,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_WHITESTONE
+ # endif
+-# define machine_is_htcwhitestone()	(machine_arch_type == MACH_TYPE_WHITESTONE)
++# define machine_is_whitestone()	(machine_arch_type == MACH_TYPE_WHITESTONE)
+ #else
+-# define machine_is_htcwhitestone()	(0)
++# define machine_is_whitestone()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_AT91SAM9263NIT
+@@ -33662,9 +33601,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_DAVINCI_CIO
+ # endif
+-# define machine_is_davinci_dm6467_cio()	(machine_arch_type == MACH_TYPE_DAVINCI_CIO)
++# define machine_is_davinci_cio()	(machine_arch_type == MACH_TYPE_DAVINCI_CIO)
+ #else
+-# define machine_is_davinci_dm6467_cio()	(0)
++# define machine_is_davinci_cio()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_SMARTMETER_DL
+@@ -33986,9 +33925,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_SHEEVAD
+ # endif
+-# define machine_is_sheevad()	(machine_arch_type == MACH_TYPE_SHEEVAD)
++# define machine_is_gplugd()	(machine_arch_type == MACH_TYPE_SHEEVAD)
+ #else
+-# define machine_is_sheevad()	(0)
++# define machine_is_gplugd()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_QSD8X50A_ST1_1
+@@ -35678,9 +35617,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_HTCSHIFT
+ # endif
+-# define machine_is_htcclio()	(machine_arch_type == MACH_TYPE_HTCSHIFT)
++# define machine_is_htcshift()	(machine_arch_type == MACH_TYPE_HTCSHIFT)
+ #else
+-# define machine_is_htcclio()	(0)
++# define machine_is_htcshift()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_DAVINCI_DM365_FC
+@@ -35810,9 +35749,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_LPC2
+ # endif
+-# define machine_is_lpc_evo()	(machine_arch_type == MACH_TYPE_LPC2)
++# define machine_is_lpc2()	(machine_arch_type == MACH_TYPE_LPC2)
+ #else
+-# define machine_is_lpc_evo()	(0)
++# define machine_is_lpc2()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_OLYMPUS
+@@ -36134,9 +36073,9 @@ extern unsigned int __machine_arch_type;
+ # else
+ #  define machine_arch_type	MACH_TYPE_SBC9261
+ # endif
+-# define machine_is_at91sam9261()	(machine_arch_type == MACH_TYPE_SBC9261)
++# define machine_is_sbc9261()	(machine_arch_type == MACH_TYPE_SBC9261)
+ #else
+-# define machine_is_at91sam9261()	(0)
++# define machine_is_sbc9261()	(0)
+ #endif
+ 
+ #ifdef CONFIG_MACH_PCBFP0001
+@@ -36319,748 +36258,16 @@ extern unsigned int __machine_arch_type;
+ # define machine_is_pdc100()	(0)
+ #endif
+ 
+-#ifdef CONFIG_MACH_EUKREA_CPUIMX25
++#ifdef CONFIG_MACH_AT91SAM9X5EK
+ # ifdef machine_arch_type
+ #  undef machine_arch_type
+ #  define machine_arch_type	__machine_arch_type
+ # else
+-#  define machine_arch_type	MACH_TYPE_EUKREA_CPUIMX25
++#  define machine_arch_type	MACH_TYPE_AT91SAM9X5EK
+ # endif
+-# define machine_is_eukrea_cpuimx25sd()	(machine_arch_type == MACH_TYPE_EUKREA_CPUIMX25)
++# define machine_is_at91sam9x5ek()	(machine_arch_type == MACH_TYPE_AT91SAM9X5EK)
+ #else
+-# define machine_is_eukrea_cpuimx25sd()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_EUKREA_CPUIMX35
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_EUKREA_CPUIMX35
+-# endif
+-# define machine_is_eukrea_cpuimx35sd()	(machine_arch_type == MACH_TYPE_EUKREA_CPUIMX35)
+-#else
+-# define machine_is_eukrea_cpuimx35sd()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_EUKREA_CPUIMX51SD
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_EUKREA_CPUIMX51SD
+-# endif
+-# define machine_is_eukrea_cpuimx51sd()	(machine_arch_type == MACH_TYPE_EUKREA_CPUIMX51SD)
+-#else
+-# define machine_is_eukrea_cpuimx51sd()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_EUKREA_CPUIMX51
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_EUKREA_CPUIMX51
+-# endif
+-# define machine_is_eukrea_cpuimx51()	(machine_arch_type == MACH_TYPE_EUKREA_CPUIMX51)
+-#else
+-# define machine_is_eukrea_cpuimx51()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_P565
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_P565
+-# endif
+-# define machine_is_p565()	(machine_arch_type == MACH_TYPE_P565)
+-#else
+-# define machine_is_p565()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_ACER_A4
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_ACER_A4
+-# endif
+-# define machine_is_acer_a4()	(machine_arch_type == MACH_TYPE_ACER_A4)
+-#else
+-# define machine_is_acer_a4()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_DAVINCI_DM368_BIP
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_DAVINCI_DM368_BIP
+-# endif
+-# define machine_is_davinci_dm368_bip()	(machine_arch_type == MACH_TYPE_DAVINCI_DM368_BIP)
+-#else
+-# define machine_is_davinci_dm368_bip()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_ESHARE
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_ESHARE
+-# endif
+-# define machine_is_eshare()	(machine_arch_type == MACH_TYPE_ESHARE)
+-#else
+-# define machine_is_eshare()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_HW_OMAPL138_EUROPA
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_HW_OMAPL138_EUROPA
+-# endif
+-# define machine_is_hw_omapl138_europa()	(machine_arch_type == MACH_TYPE_HW_OMAPL138_EUROPA)
+-#else
+-# define machine_is_hw_omapl138_europa()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_WLBARGN
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_WLBARGN
+-# endif
+-# define machine_is_wlbargn()	(machine_arch_type == MACH_TYPE_WLBARGN)
+-#else
+-# define machine_is_wlbargn()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_BM170
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_BM170
+-# endif
+-# define machine_is_bm170()	(machine_arch_type == MACH_TYPE_BM170)
+-#else
+-# define machine_is_bm170()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_NETSPACE_MINI_V2
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_NETSPACE_MINI_V2
+-# endif
+-# define machine_is_netspace_mini_v2()	(machine_arch_type == MACH_TYPE_NETSPACE_MINI_V2)
+-#else
+-# define machine_is_netspace_mini_v2()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_NETSPACE_PLUG_V2
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_NETSPACE_PLUG_V2
+-# endif
+-# define machine_is_netspace_plug_v2()	(machine_arch_type == MACH_TYPE_NETSPACE_PLUG_V2)
+-#else
+-# define machine_is_netspace_plug_v2()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_SIEMENS_L1
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_SIEMENS_L1
+-# endif
+-# define machine_is_siemens_l1()	(machine_arch_type == MACH_TYPE_SIEMENS_L1)
+-#else
+-# define machine_is_siemens_l1()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_ELV_LCU1
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_ELV_LCU1
+-# endif
+-# define machine_is_elv_lcu1()	(machine_arch_type == MACH_TYPE_ELV_LCU1)
+-#else
+-# define machine_is_elv_lcu1()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_MCU1
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_MCU1
+-# endif
+-# define machine_is_mcu1()	(machine_arch_type == MACH_TYPE_MCU1)
+-#else
+-# define machine_is_mcu1()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_OMAP3_TAO3530
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_OMAP3_TAO3530
+-# endif
+-# define machine_is_omap3_tao3530()	(machine_arch_type == MACH_TYPE_OMAP3_TAO3530)
+-#else
+-# define machine_is_omap3_tao3530()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_OMAP3_PCUTOUCH
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_OMAP3_PCUTOUCH
+-# endif
+-# define machine_is_omap3_pcutouch()	(machine_arch_type == MACH_TYPE_OMAP3_PCUTOUCH)
+-#else
+-# define machine_is_omap3_pcutouch()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_SMDKC210
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_SMDKC210
+-# endif
+-# define machine_is_smdkc210()	(machine_arch_type == MACH_TYPE_SMDKC210)
+-#else
+-# define machine_is_smdkc210()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_OMAP3_BRAILLO
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_OMAP3_BRAILLO
+-# endif
+-# define machine_is_omap3_braillo()	(machine_arch_type == MACH_TYPE_OMAP3_BRAILLO)
+-#else
+-# define machine_is_omap3_braillo()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_SPYPLUG
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_SPYPLUG
+-# endif
+-# define machine_is_spyplug()	(machine_arch_type == MACH_TYPE_SPYPLUG)
+-#else
+-# define machine_is_spyplug()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_GINGER
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_GINGER
+-# endif
+-# define machine_is_ginger()	(machine_arch_type == MACH_TYPE_GINGER)
+-#else
+-# define machine_is_ginger()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_TNY_T3530
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_TNY_T3530
+-# endif
+-# define machine_is_tny_t3530()	(machine_arch_type == MACH_TYPE_TNY_T3530)
+-#else
+-# define machine_is_tny_t3530()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_PCA102
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_PCA102
+-# endif
+-# define machine_is_pca102()	(machine_arch_type == MACH_TYPE_PCA102)
+-#else
+-# define machine_is_pca102()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_SPADE
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_SPADE
+-# endif
+-# define machine_is_spade()	(machine_arch_type == MACH_TYPE_SPADE)
+-#else
+-# define machine_is_spade()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_MXC25_TOPAZ
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_MXC25_TOPAZ
+-# endif
+-# define machine_is_mxc25_topaz()	(machine_arch_type == MACH_TYPE_MXC25_TOPAZ)
+-#else
+-# define machine_is_mxc25_topaz()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_T5325
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_T5325
+-# endif
+-# define machine_is_t5325()	(machine_arch_type == MACH_TYPE_T5325)
+-#else
+-# define machine_is_t5325()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_GW2361
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_GW2361
+-# endif
+-# define machine_is_gw2361()	(machine_arch_type == MACH_TYPE_GW2361)
+-#else
+-# define machine_is_gw2361()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_ELOG
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_ELOG
+-# endif
+-# define machine_is_elog()	(machine_arch_type == MACH_TYPE_ELOG)
+-#else
+-# define machine_is_elog()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_INCOME
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_INCOME
+-# endif
+-# define machine_is_income()	(machine_arch_type == MACH_TYPE_INCOME)
+-#else
+-# define machine_is_income()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_BCM589X
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_BCM589X
+-# endif
+-# define machine_is_bcm589x()	(machine_arch_type == MACH_TYPE_BCM589X)
+-#else
+-# define machine_is_bcm589x()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_ETNA
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_ETNA
+-# endif
+-# define machine_is_etna()	(machine_arch_type == MACH_TYPE_ETNA)
+-#else
+-# define machine_is_etna()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_HAWKS
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_HAWKS
+-# endif
+-# define machine_is_hawks()	(machine_arch_type == MACH_TYPE_HAWKS)
+-#else
+-# define machine_is_hawks()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_MESON
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_MESON
+-# endif
+-# define machine_is_meson()	(machine_arch_type == MACH_TYPE_MESON)
+-#else
+-# define machine_is_meson()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_XSBASE255
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_XSBASE255
+-# endif
+-# define machine_is_xsbase255()	(machine_arch_type == MACH_TYPE_XSBASE255)
+-#else
+-# define machine_is_xsbase255()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_PVM2030
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_PVM2030
+-# endif
+-# define machine_is_pvm2030()	(machine_arch_type == MACH_TYPE_PVM2030)
+-#else
+-# define machine_is_pvm2030()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_MIOA502
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_MIOA502
+-# endif
+-# define machine_is_mioa502()	(machine_arch_type == MACH_TYPE_MIOA502)
+-#else
+-# define machine_is_mioa502()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_VVBOX_SDORIG2
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_VVBOX_SDORIG2
+-# endif
+-# define machine_is_vvbox_sdorig2()	(machine_arch_type == MACH_TYPE_VVBOX_SDORIG2)
+-#else
+-# define machine_is_vvbox_sdorig2()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_VVBOX_SDLITE2
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_VVBOX_SDLITE2
+-# endif
+-# define machine_is_vvbox_sdlite2()	(machine_arch_type == MACH_TYPE_VVBOX_SDLITE2)
+-#else
+-# define machine_is_vvbox_sdlite2()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_VVBOX_SDPRO4
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_VVBOX_SDPRO4
+-# endif
+-# define machine_is_vvbox_sdpro4()	(machine_arch_type == MACH_TYPE_VVBOX_SDPRO4)
+-#else
+-# define machine_is_vvbox_sdpro4()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_HTC_SPV_M700
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_HTC_SPV_M700
+-# endif
+-# define machine_is_htc_spv_m700()	(machine_arch_type == MACH_TYPE_HTC_SPV_M700)
+-#else
+-# define machine_is_htc_spv_m700()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_MX257SX
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_MX257SX
+-# endif
+-# define machine_is_mx257sx()	(machine_arch_type == MACH_TYPE_MX257SX)
+-#else
+-# define machine_is_mx257sx()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_GONI
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_GONI
+-# endif
+-# define machine_is_goni()	(machine_arch_type == MACH_TYPE_GONI)
+-#else
+-# define machine_is_goni()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_MSM8X55_SVLTE_FFA
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_MSM8X55_SVLTE_FFA
+-# endif
+-# define machine_is_msm8x55_svlte_ffa()	(machine_arch_type == MACH_TYPE_MSM8X55_SVLTE_FFA)
+-#else
+-# define machine_is_msm8x55_svlte_ffa()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_MSM8X55_SVLTE_SURF
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_MSM8X55_SVLTE_SURF
+-# endif
+-# define machine_is_msm8x55_svlte_surf()	(machine_arch_type == MACH_TYPE_MSM8X55_SVLTE_SURF)
+-#else
+-# define machine_is_msm8x55_svlte_surf()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_QUICKSTEP
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_QUICKSTEP
+-# endif
+-# define machine_is_quickstep()	(machine_arch_type == MACH_TYPE_QUICKSTEP)
+-#else
+-# define machine_is_quickstep()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_DMW96
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_DMW96
+-# endif
+-# define machine_is_dmw96()	(machine_arch_type == MACH_TYPE_DMW96)
+-#else
+-# define machine_is_dmw96()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_HAMMERHEAD
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_HAMMERHEAD
+-# endif
+-# define machine_is_hammerhead()	(machine_arch_type == MACH_TYPE_HAMMERHEAD)
+-#else
+-# define machine_is_hammerhead()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_TRIDENT
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_TRIDENT
+-# endif
+-# define machine_is_trident()	(machine_arch_type == MACH_TYPE_TRIDENT)
+-#else
+-# define machine_is_trident()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_LIGHTNING
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_LIGHTNING
+-# endif
+-# define machine_is_lightning()	(machine_arch_type == MACH_TYPE_LIGHTNING)
+-#else
+-# define machine_is_lightning()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_ICONNECT
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_ICONNECT
+-# endif
+-# define machine_is_iconnect()	(machine_arch_type == MACH_TYPE_ICONNECT)
+-#else
+-# define machine_is_iconnect()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_AUTOBOT
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_AUTOBOT
+-# endif
+-# define machine_is_autobot()	(machine_arch_type == MACH_TYPE_AUTOBOT)
+-#else
+-# define machine_is_autobot()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_COCONUT
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_COCONUT
+-# endif
+-# define machine_is_coconut()	(machine_arch_type == MACH_TYPE_COCONUT)
+-#else
+-# define machine_is_coconut()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_DURIAN
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_DURIAN
+-# endif
+-# define machine_is_durian()	(machine_arch_type == MACH_TYPE_DURIAN)
+-#else
+-# define machine_is_durian()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_CAYENNE
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_CAYENNE
+-# endif
+-# define machine_is_cayenne()	(machine_arch_type == MACH_TYPE_CAYENNE)
+-#else
+-# define machine_is_cayenne()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_FUJI
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_FUJI
+-# endif
+-# define machine_is_fuji()	(machine_arch_type == MACH_TYPE_FUJI)
+-#else
+-# define machine_is_fuji()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_SYNOLOGY_6282
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_SYNOLOGY_6282
+-# endif
+-# define machine_is_synology_6282()	(machine_arch_type == MACH_TYPE_SYNOLOGY_6282)
+-#else
+-# define machine_is_synology_6282()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_EM1SY
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_EM1SY
+-# endif
+-# define machine_is_em1sy()	(machine_arch_type == MACH_TYPE_EM1SY)
+-#else
+-# define machine_is_em1sy()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_M502
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_M502
+-# endif
+-# define machine_is_m502()	(machine_arch_type == MACH_TYPE_M502)
+-#else
+-# define machine_is_m502()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_MATRIX518
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_MATRIX518
+-# endif
+-# define machine_is_matrix518()	(machine_arch_type == MACH_TYPE_MATRIX518)
+-#else
+-# define machine_is_matrix518()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_TINY_GURNARD
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_TINY_GURNARD
+-# endif
+-# define machine_is_tiny_gurnard()	(machine_arch_type == MACH_TYPE_TINY_GURNARD)
+-#else
+-# define machine_is_tiny_gurnard()	(0)
+-#endif
+-
+-#ifdef CONFIG_MACH_SPEAR1310
+-# ifdef machine_arch_type
+-#  undef machine_arch_type
+-#  define machine_arch_type	__machine_arch_type
+-# else
+-#  define machine_arch_type	MACH_TYPE_SPEAR1310
+-# endif
+-# define machine_is_spear1310()	(machine_arch_type == MACH_TYPE_SPEAR1310)
+-#else
+-# define machine_is_spear1310()	(0)
++# define machine_is_at91sam9x5ek()	(0)
+ #endif
+ 
+ /*
+diff --git a/board/atmel/at91sam9x5ek/Makefile b/board/atmel/at91sam9x5ek/Makefile
+new file mode 100644
+index 0000000..32878b5
+--- /dev/null
++++ b/board/atmel/at91sam9x5ek/Makefile
+@@ -0,0 +1,54 @@
++#
++# (C) Copyright 2003-2008
++# Wolfgang Denk, DENX Software Engineering, wd@denx.de.
++#
++# (C) Copyright 2008
++# Stelian Pop <stelian.pop@leadtechdesign.com>
++# Lead Tech Design <www.leadtechdesign.com>
++#
++# See file CREDITS for list of people who contributed to this
++# project.
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License as
++# published by the Free Software Foundation; either version 2 of
++# the License, or (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++# MA 02111-1307 USA
++#
++
++include $(TOPDIR)/config.mk
++
++LIB	= $(obj)lib$(BOARD).a
++
++COBJS-y += at91sam9x5ek.o
++
++SRCS	:= $(SOBJS:.o=.S) $(COBJS-y:.o=.c)
++OBJS	:= $(addprefix $(obj),$(COBJS-y))
++SOBJS	:= $(addprefix $(obj),$(SOBJS))
++
++$(LIB):	$(obj).depend $(OBJS) $(SOBJS)
++	$(AR) $(ARFLAGS) $@ $(OBJS) $(SOBJS)
++
++clean:
++	rm -f $(SOBJS) $(OBJS)
++
++distclean:	clean
++	rm -f $(LIB) core *.bak $(obj).depend
++
++#########################################################################
++
++# defines $(obj).depend target
++include $(SRCTREE)/rules.mk
++
++sinclude $(obj).depend
++
++#########################################################################
+diff --git a/board/atmel/at91sam9x5ek/at91sam9x5ek.c b/board/atmel/at91sam9x5ek/at91sam9x5ek.c
+new file mode 100644
+index 0000000..f7a14fe
+--- /dev/null
++++ b/board/atmel/at91sam9x5ek/at91sam9x5ek.c
+@@ -0,0 +1,400 @@
++/*
++ * (C) Copyright 2007-2008
++ * Stelian Pop <stelian.pop@leadtechdesign.com>
++ * Lead Tech Design <www.leadtechdesign.com>
++ *
++ * See file CREDITS for list of people who contributed to this
++ * project.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of
++ * the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++ * MA 02111-1307 USA
++ */
++
++#include <common.h>
++#include <asm/sizes.h>
++#include <asm/arch/at91sam9x5.h>
++#include <asm/arch/at91sam9x5_matrix.h>
++#include <asm/arch/at91sam9_smc.h>
++#include <asm/arch/at91_common.h>
++#include <asm/arch/at91_pmc.h>
++#include <asm/arch/at91_rstc.h>
++#include <asm/arch/clk.h>
++#include <asm/arch/gpio.h>
++#include <asm/arch/io.h>
++#include <asm/arch/hardware.h>
++#include <asm/arch/one_wire_info.h>
++#include <lcd.h>
++#include <atmel_lcdc.h>
++#if defined(CONFIG_RESET_PHY_R) && defined(CONFIG_MACB)
++#include <net.h>
++#endif
++#include <netdev.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++#ifdef CONFIG_LOAD_ONE_WIRE_INFO
++static u32 system_rev;
++static u32 system_serial_low;
++
++u32 get_board_rev(void)
++{
++	return system_rev;
++}
++
++void get_board_serial(struct tag_serialnr *serialnr)
++{
++	serialnr->high = 0;	/* Not used */
++	serialnr->low = system_serial_low;
++}
++
++void load_1wire_info(void)
++{
++	/* serial is in GPBR #2 and revision is in GPBR #3 */
++	system_serial_low = at91_sys_read(AT91_GPBR + 4 * 2);
++	system_rev = at91_sys_read(AT91_GPBR + 4 * 3);
++}
++
++
++#define nand_nfd0_on_d16(rev)	(cm_rev(rev) > 0)
++#define nand_alt_rdy_busy(rev)	(cm_rev(rev) > 0)
++#else
++/* If no One Wire information: assume we are using revA boards */
++#define nand_nfd0_on_d16(rev)	0
++#define nand_alt_rdy_busy(rev)	0
++#endif
++
++/* ------------------------------------------------------------------------- */
++/*
++ * Miscelaneous platform dependent initialisations
++ */
++#ifdef CONFIG_CMD_NAND
++static void at91sam9x5ek_nand_hw_init(void)
++{
++	unsigned long csa;
++
++	/* Enable CS3 */
++	csa = at91_sys_read(AT91_MATRIX_EBICSA);
++
++	if (nand_nfd0_on_d16(system_rev)) {
++		csa |= AT91_MATRIX_NFD0_ON_D16;
++#ifndef CONFIG_SYS_NAND_DBW_16
++		csa |= AT91_MATRIX_MP_ON;
++#endif
++	} else {
++		csa &= ~AT91_MATRIX_NFD0_ON_D16;
++		csa &= ~AT91_MATRIX_MP_ON;
++	}
++	/* Configure IO drive */
++	csa &= ~AT91_MATRIX_EBI_EBI_IOSR;
++
++	at91_sys_write(AT91_MATRIX_EBICSA,
++		       csa | AT91_MATRIX_EBI_CS3A_SMC_NANDFLASH);
++
++	/* Configure SMC CS3 for NAND/SmartMedia */
++
++
++
++#ifdef CONFIG_ATMEL_NAND_HW_PMECC
++	at91_sys_write(AT91_SMC_SETUP(3),
++		       AT91_SMC_NWESETUP_(1) | AT91_SMC_NCS_WRSETUP_(0) |
++		       AT91_SMC_NRDSETUP_(1) | AT91_SMC_NCS_RDSETUP_(0));
++	at91_sys_write(AT91_SMC_PULSE(3),
++		       AT91_SMC_NWEPULSE_(3) | AT91_SMC_NCS_WRPULSE_(5) |
++		       AT91_SMC_NRDPULSE_(4) | AT91_SMC_NCS_RDPULSE_(6));
++	at91_sys_write(AT91_SMC_CYCLE(3),
++		       AT91_SMC_NWECYCLE_(5) | AT91_SMC_NRDCYCLE_(6));
++	at91_sys_write(AT91_SMC_MODE(3),
++		       AT91_SMC_READMODE | AT91_SMC_WRITEMODE |
++		       AT91_SMC_EXNWMODE_DISABLE |
++#ifdef CONFIG_SYS_NAND_DBW_16
++		       AT91_SMC_DBW_16 |
++#else /* CONFIG_SYS_NAND_DBW_8 */
++		       AT91_SMC_DBW_8 |
++#endif
++		       AT91_SMC_TDF_(1));
++#else
++	at91_sys_write(AT91_SMC_SETUP(3),
++		       AT91_SMC_NWESETUP_(2) | AT91_SMC_NCS_WRSETUP_(0) |
++		       AT91_SMC_NRDSETUP_(2) | AT91_SMC_NCS_RDSETUP_(0));
++	at91_sys_write(AT91_SMC_PULSE(3),
++		       AT91_SMC_NWEPULSE_(4) | AT91_SMC_NCS_WRPULSE_(4) |
++		       AT91_SMC_NRDPULSE_(4) | AT91_SMC_NCS_RDPULSE_(4));
++	at91_sys_write(AT91_SMC_CYCLE(3),
++		       AT91_SMC_NWECYCLE_(7) | AT91_SMC_NRDCYCLE_(7));
++	at91_sys_write(AT91_SMC_MODE(3),
++		       AT91_SMC_READMODE | AT91_SMC_WRITEMODE |
++		       AT91_SMC_EXNWMODE_DISABLE |
++#ifdef CONFIG_SYS_NAND_DBW_16
++		       AT91_SMC_DBW_16 |
++#else /* CONFIG_SYS_NAND_DBW_8 */
++		       AT91_SMC_DBW_8 |
++#endif
++		       AT91_SMC_TDF_(3));
++#endif /* CONFIG_ATMEL_NAND_HW_PMECC */
++
++	at91_sys_write(AT91_PMC_PCER, 1 << AT91SAM9X5_ID_PIOCD);
++
++	/* Configure RDY/BSY */
++	if (nand_alt_rdy_busy(system_rev))
++		at91_set_gpio_input(CONFIG_SYS_NAND_ALT_READY_PIN, 1);
++	else
++		at91_set_gpio_input(CONFIG_SYS_NAND_READY_PIN, 1);
++
++	/* Enable NandFlash */
++	at91_set_gpio_output(CONFIG_SYS_NAND_ENABLE_PIN, 1);
++
++	at91_set_a_periph(AT91_PIO_PORTD, 0, 1);	/* NAND OE */
++	at91_set_a_periph(AT91_PIO_PORTD, 1, 1);	/* NAND WE */
++	at91_set_a_periph(AT91_PIO_PORTD, 2, 1);	/* ALE */
++	at91_set_a_periph(AT91_PIO_PORTD, 3, 1);	/* CLE */
++
++	if (nand_nfd0_on_d16(system_rev)) {
++		at91_set_a_periph(AT91_PIO_PORTD, 6, 1);
++		at91_set_a_periph(AT91_PIO_PORTD, 7, 1);
++		at91_set_a_periph(AT91_PIO_PORTD, 8, 1);
++		at91_set_a_periph(AT91_PIO_PORTD, 9, 1);
++		at91_set_a_periph(AT91_PIO_PORTD, 10, 1);
++		at91_set_a_periph(AT91_PIO_PORTD, 11, 1);
++		at91_set_a_periph(AT91_PIO_PORTD, 12, 1);
++		at91_set_a_periph(AT91_PIO_PORTD, 13, 1);
++	}
++}
++#endif
++
++#ifdef CONFIG_RESET_PHY_R
++void reset_phy(void)
++{
++#ifdef CONFIG_MACB
++	/*
++	 * Initialize ethernet HW addr prior to starting Linux,
++	 * needed for nfsroot
++	 */
++	eth_init(gd->bd);
++#endif
++}
++#endif
++
++int board_eth_init(bd_t *bis)
++{
++	int rc = 0;
++#ifdef CONFIG_MACB
++	if (has_emac0())
++		rc = macb_eth_initialize(0,
++			(void *)AT91SAM9X5_BASE_EMAC0, 0x00);
++	if (has_emac1())
++		rc = macb_eth_initialize(1,
++			(void *)AT91SAM9X5_BASE_EMAC1, 0x00);
++#endif
++	return rc;
++}
++
++#ifdef CONFIG_MACB
++static void at91sam9x5ek_macb_hw_init(void)
++{
++	/* Enable clock */
++	if (has_emac0())
++		at91_sys_write(AT91_PMC_PCER, 1 << AT91SAM9X5_ID_EMAC0);
++	if (has_emac1())
++		at91_sys_write(AT91_PMC_PCER, 1 << AT91SAM9X5_ID_EMAC1);
++	at91_macb_hw_init();
++}
++#endif
++
++#ifdef CONFIG_LCD
++
++vidinfo_t panel_info = {
++	vl_col:		800,
++	vl_row:		480,
++	vl_clk:		24000000,
++	vl_sync:	ATMEL_LCDC_INVLINE_NORMAL |
++			ATMEL_LCDC_INVFRAME_NORMAL,
++	vl_bpix:	LCD_BPP,
++	vl_tft:		1,
++	vl_hsync_len:	128,
++	vl_left_margin:	64,
++	vl_right_margin:64,
++	vl_vsync_len:	2,
++	vl_upper_margin:22,
++	vl_lower_margin:21,
++	mmio:		AT91SAM9X5_BASE_LCDC,
++};
++
++
++void lcd_enable(void)
++{
++	if (has_lcdc())
++		at91_set_A_periph(AT91_PIN_PC29, 1);	/* power up */
++}
++
++void lcd_disable(void)
++{
++	if (has_lcdc())
++		at91_set_A_periph(AT91_PIN_PC29, 0);	/* power down */
++}
++
++static void at91sam9x5ek_lcd_hw_init(void)
++{
++	if (has_lcdc()) {
++		at91_set_A_periph(AT91_PIN_PC26, 0);	/* LCDPWM */
++		at91_set_A_periph(AT91_PIN_PC27, 0);	/* LCDVSYNC */
++		at91_set_A_periph(AT91_PIN_PC28, 0);	/* LCDHSYNC */
++		at91_set_A_periph(AT91_PIN_PC24, 0);	/* LCDDISP */
++		at91_set_A_periph(AT91_PIN_PC29, 0);	/* LCDDEN */
++		at91_set_A_periph(AT91_PIN_PC30, 0);	/* LCDPCK */
++
++		at91_set_A_periph(AT91_PIN_PC0, 0);	/* LCDD0 */
++		at91_set_A_periph(AT91_PIN_PC1, 0);	/* LCDD1 */
++		at91_set_A_periph(AT91_PIN_PC2, 0);	/* LCDD2 */
++		at91_set_A_periph(AT91_PIN_PC3, 0);	/* LCDD3 */
++		at91_set_A_periph(AT91_PIN_PC4, 0);	/* LCDD4 */
++		at91_set_A_periph(AT91_PIN_PC5, 0);	/* LCDD5 */
++		at91_set_A_periph(AT91_PIN_PC6, 0);	/* LCDD6 */
++		at91_set_A_periph(AT91_PIN_PC7, 0);	/* LCDD7 */
++		at91_set_A_periph(AT91_PIN_PC8, 0);	/* LCDD8 */
++		at91_set_A_periph(AT91_PIN_PC9, 0);	/* LCDD9 */
++		at91_set_A_periph(AT91_PIN_PC10, 0);	/* LCDD10 */
++		at91_set_A_periph(AT91_PIN_PC11, 0);	/* LCDD11 */
++		at91_set_A_periph(AT91_PIN_PC12, 0);	/* LCDD12 */
++		at91_set_B_periph(AT91_PIN_PC13, 0);	/* LCDD13 */
++		at91_set_A_periph(AT91_PIN_PC14, 0);	/* LCDD14 */
++		at91_set_A_periph(AT91_PIN_PC15, 0);	/* LCDD15 */
++		at91_set_A_periph(AT91_PIN_PC16, 0);	/* LCDD16 */
++		at91_set_A_periph(AT91_PIN_PC17, 0);	/* LCDD17 */
++		at91_set_A_periph(AT91_PIN_PC18, 0);	/* LCDD18 */
++		at91_set_A_periph(AT91_PIN_PC19, 0);	/* LCDD19 */
++		at91_set_A_periph(AT91_PIN_PC20, 0);	/* LCDD20 */
++		at91_set_B_periph(AT91_PIN_PC21, 0);	/* LCDD21 */
++		at91_set_A_periph(AT91_PIN_PC22, 0);	/* LCDD22 */
++		at91_set_A_periph(AT91_PIN_PC23, 0);	/* LCDD23 */
++
++		at91_sys_write(AT91_PMC_PCER, 1 << AT91SAM9X5_ID_LCDC);
++
++		gd->fb_base = CONFIG_AT91SAM9X5_LCD_BASE;
++	}
++}
++
++#ifdef CONFIG_LCD_INFO
++#include <nand.h>
++#include <version.h>
++
++void lcd_show_board_info(void)
++{
++	ulong dram_size, nand_size;
++	int i;
++	char temp[32];
++
++	if (has_lcdc()) {
++		lcd_printf("%s\n", U_BOOT_VERSION);
++		lcd_printf("(C) 2010 ATMEL Corp\n");
++		lcd_printf("at91support@atmel.com\n");
++		lcd_printf("%s CPU at %s MHz\n",
++			get_cpu_name(),
++			strmhz(temp, get_cpu_clk_rate()));
++
++		dram_size = 0;
++		for (i = 0; i < CONFIG_NR_DRAM_BANKS; i++)
++			dram_size += gd->bd->bi_dram[i].size;
++		nand_size = 0;
++		for (i = 0; i < CONFIG_SYS_MAX_NAND_DEVICE; i++)
++			nand_size += nand_info[i].size;
++		lcd_printf("  %ld MB SDRAM, %ld MB NAND\n",
++			dram_size >> 20,
++			nand_size >> 20);
++	}
++}
++#endif /* CONFIG_LCD_INFO */
++#endif /* CONFIG_LCD */
++
++/* SPI chip select control */
++#ifdef CONFIG_ATMEL_SPI
++#include <spi.h>
++
++int spi_cs_is_valid(unsigned int bus, unsigned int cs)
++{
++	return bus == 0 && cs < 2;
++}
++
++void spi_cs_activate(struct spi_slave *slave)
++{
++	switch (slave->cs) {
++	case 1:
++		at91_set_gpio_output(AT91_PIN_PA7, 0);
++		break;
++	case 0:
++	default:
++		at91_set_gpio_output(AT91_PIN_PA14, 0);
++		break;
++	}
++}
++
++void spi_cs_deactivate(struct spi_slave *slave)
++{
++	switch (slave->cs) {
++	case 1:
++		at91_set_gpio_output(AT91_PIN_PA7, 1);
++		break;
++	case 0:
++	default:
++		at91_set_gpio_output(AT91_PIN_PA14, 1);
++		break;
++	}
++}
++#endif /* CONFIG_ATMEL_SPI */
++
++
++int board_init(void)
++{
++	/* Enable Ctrlc */
++	console_init_f();
++
++	/* arch number of AT91SAM9X5EK-Board */
++	gd->bd->bi_arch_number = MACH_TYPE_AT91SAM9X5EK;
++
++	/* adress of boot parameters */
++	gd->bd->bi_boot_params = PHYS_SDRAM + 0x100;
++
++	at91_serial_hw_init();
++
++#ifdef CONFIG_LOAD_ONE_WIRE_INFO
++	load_1wire_info();
++#endif
++
++#ifdef CONFIG_CMD_NAND
++	at91sam9x5ek_nand_hw_init();
++#endif
++
++#ifdef CONFIG_ATMEL_SPI
++	at91_spi0_hw_init(1 << 0);
++	at91_spi0_hw_init(1 << 4);
++#endif
++
++#ifdef CONFIG_MACB
++	at91sam9x5ek_macb_hw_init();
++#endif
++
++#ifdef CONFIG_LCD
++	at91sam9x5ek_lcd_hw_init();
++#endif
++	return 0;
++}
++
++int dram_init(void)
++{
++	gd->bd->bi_dram[0].start = PHYS_SDRAM;
++	gd->bd->bi_dram[0].size = PHYS_SDRAM_SIZE;
++	return 0;
++}
++
++
+diff --git a/board/atmel/at91sam9x5ek/config.mk b/board/atmel/at91sam9x5ek/config.mk
+new file mode 100644
+index 0000000..4ed43ed
+--- /dev/null
++++ b/board/atmel/at91sam9x5ek/config.mk
+@@ -0,0 +1 @@
++TEXT_BASE = 0x26f00000
+diff --git a/common/cmd_nand.c b/common/cmd_nand.c
+index f611fd7..8b4b2b7 100644
+--- a/common/cmd_nand.c
++++ b/common/cmd_nand.c
+@@ -383,7 +383,14 @@ int do_nand(cmd_tbl_t * cmdtp, int flag, int argc, char *argv[])
+ 							 (u_char *)addr);
+ 			else
+ 				ret = nand_write_skip_bad(nand, off, &size,
+-							  (u_char *)addr);
++							  (u_char *)addr, 0);
++		} else if (!strcmp(s, ".trimffs")) {
++			if (read) {
++				printf("Unknown nand command suffix '%s'.\n", s);
++				return 1;
++			}
++			ret = nand_write_skip_bad(nand, off, &size,
++					(u_char *)addr, WITH_DROP_FFS);
+ 		} else if (!strcmp(s, ".oob")) {
+ 			/* out-of-band data */
+ 			mtd_oob_ops_t ops = {
+@@ -489,6 +496,11 @@ U_BOOT_CMD(nand, CONFIG_SYS_MAXARGS, 1, do_nand,
+ 	"nand write - addr off|partition size\n"
+ 	"    read/write 'size' bytes starting at offset 'off'\n"
+ 	"    to/from memory address 'addr', skipping bad blocks.\n"
++	"nand write.trimffs - addr off|partition size\n"
++	"    write 'size' bytes starting at offset 'off'\n"
++	"    from memory address 'addr', skipping bad blocks and "
++	"dropping any pages at the\n"
++	"    end of eraseblocks that contain only 0xFF\n"
+ 	"nand erase [clean] [off size] - erase 'size' bytes from\n"
+ 	"    offset 'off' (entire device if not specified)\n"
+ 	"nand bad - show bad blocks\n"
+diff --git a/doc/README.at91 b/doc/README.at91
+index 84b5595..2e3ae89 100644
+--- a/doc/README.at91
++++ b/doc/README.at91
+@@ -95,6 +95,23 @@ Environment variables
+ 
+ 
+ ------------------------------------------------------------------------------
++AT91SAM9X5EK
++------------------------------------------------------------------------------
++
++Memory map
++	0x20000000 - 27FFFFFF	SDRAM (128 MB)
++	0x10000000 - 1xxxxxxx	Soldered Atmel Dataflash (SW1-2)
++
++Environment variables
++
++	U-Boot environment variables can be stored at different places:
++		- Nand flash.
++
++	You can choose your storage location at config step (here for at91sam9x5ek) :
++		make at91sam9x5ek_config			- use nand flash (default)
++
++
++------------------------------------------------------------------------------
+ AT91SAM9RLEK
+ ------------------------------------------------------------------------------
+ 
+diff --git a/drivers/gpio/at91_gpio.c b/drivers/gpio/at91_gpio.c
+index c0a97bc..bcd81bb 100644
+--- a/drivers/gpio/at91_gpio.c
++++ b/drivers/gpio/at91_gpio.c
+@@ -76,7 +76,14 @@ int at91_set_a_periph(unsigned port, unsigned pin, int use_pullup)
+ 		mask = 1 << pin;
+ 		writel(mask, &pio->port[port].idr);
+ 		at91_set_pio_pullup(port, pin, use_pullup);
++#if defined(CPU_HAS_PIO3)
++		writel(readl(&pio->port[port].abcdsr1) & ~mask,
++			&pio->port[port].abcdsr1);
++		writel(readl(&pio->port[port].abcdsr2) & ~mask,
++			&pio->port[port].abcdsr2);
++#else
+ 		writel(mask, &pio->port[port].asr);
++#endif
+ 		writel(mask, &pio->port[port].pdr);
+ 	}
+ 	return 0;
+@@ -94,12 +101,63 @@ int at91_set_b_periph(unsigned port, unsigned pin, int use_pullup)
+ 		mask = 1 << pin;
+ 		writel(mask, &pio->port[port].idr);
+ 		at91_set_pio_pullup(port, pin, use_pullup);
++#if defined(CPU_HAS_PIO3)
++		writel(readl(&pio->port[port].abcdsr1) | mask,
++			&pio->port[port].abcdsr1);
++		writel(readl(&pio->port[port].abcdsr2) & ~mask,
++			&pio->port[port].abcdsr2);
++#else
+ 		writel(mask, &pio->port[port].bsr);
++#endif
+ 		writel(mask, &pio->port[port].pdr);
+ 	}
+ 	return 0;
+ }
+ 
++#if defined(CPU_HAS_PIO3)
++/*
++ * mux the pin to the "C" internal peripheral role.
++ */
++int at91_set_c_periph(unsigned port, unsigned pin, int use_pullup)
++{
++	at91_pio_t	*pio	= (at91_pio_t *) AT91_PIO_BASE;
++	u32		mask;
++
++	if ((port < AT91_PIO_PORTS) && (pin < 32)) {
++		mask = 1 << pin;
++		writel(mask, &pio->port[port].idr);
++		at91_set_pio_pullup(port, pin, use_pullup);
++		writel(readl(&pio->port[port].abcdsr1) & ~mask,
++			&pio->port[port].abcdsr1);
++		writel(readl(&pio->port[port].abcdsr2) | mask,
++			&pio->port[port].abcdsr2);
++		writel(mask, &pio->port[port].pdr);
++	}
++	return 0;
++}
++
++/*
++ * mux the pin to the "D" internal peripheral role.
++ */
++int at91_set_d_periph(unsigned port, unsigned pin, int use_pullup)
++{
++	at91_pio_t	*pio	= (at91_pio_t *) AT91_PIO_BASE;
++	u32		mask;
++
++	if ((port < AT91_PIO_PORTS) && (pin < 32)) {
++		mask = 1 << pin;
++		writel(mask, &pio->port[port].idr);
++		at91_set_pio_pullup(port, pin, use_pullup);
++		writel(readl(&pio->port[port].abcdsr1) | mask,
++			&pio->port[port].abcdsr1);
++		writel(readl(&pio->port[port].abcdsr2) | mask,
++			&pio->port[port].abcdsr2);
++		writel(mask, &pio->port[port].pdr);
++	}
++	return 0;
++}
++#endif
++
+ /*
+  * mux the pin to the gpio controller (instead of "A" or "B" peripheral), and
+  * configure it for an input.
+@@ -152,21 +210,82 @@ int at91_set_pio_deglitch(unsigned port, unsigned pin, int is_on)
+ 
+ 	if ((port < AT91_PIO_PORTS) && (pin < 32)) {
+ 		mask = 1 << pin;
+-		if (is_on)
++		if (is_on) {
++#if defined(CPU_HAS_PIO3)
++			writel(mask, &pio->port[port].ifscdr);
++#endif
+ 			writel(mask, &pio->port[port].ifer);
+-		else
++		} else
++			writel(mask, &pio->port[port].ifdr);
++	}
++	return 0;
++}
++
++#if defined(CPU_HAS_PIO3)
++/*
++ * enable/disable the debounce filter.
++ */
++int at91_set_pio_debounce(unsigned port, unsigned pin, int is_on, int div)
++{
++	at91_pio_t	*pio	= (at91_pio_t *) AT91_PIO_BASE;
++	u32		mask;
++
++	if ((port < AT91_PIO_PORTS) && (pin < 32)) {
++		mask = 1 << pin;
++		if (is_on) {
++			writel(mask, &pio->port[port].ifscer);
++			writel(div & PIO_SCDR_DIV, &pio->port[port].scdr);
++			writel(mask, &pio->port[port].ifer);
++		} else
+ 			writel(mask, &pio->port[port].ifdr);
+ 	}
+ 	return 0;
+ }
+ 
+ /*
++ * enable/disable the pull-down.
++ * If pull-up already enabled while calling the function, we disable it.
++ */
++int at91_set_pio_pulldown(unsigned port, unsigned pin, int is_on)
++{
++	at91_pio_t	*pio	= (at91_pio_t *) AT91_PIO_BASE;
++	u32		mask;
++
++	if ((port < AT91_PIO_PORTS) && (pin < 32)) {
++		mask = 1 << pin;
++		writel(mask, &pio->port[port].pudr);
++		if (is_on)
++			writel(mask, &pio->port[port].ppder);
++		else
++			writel(mask, &pio->port[port].ppddr);
++	}
++	return 0;
++}
++
++/*
++ * disable Schmitt trigger
++ */
++int at91_set_pio_disable_schmitt_trig(unsigned port, unsigned pin)
++{
++	at91_pio_t	*pio	= (at91_pio_t *) AT91_PIO_BASE;
++	u32		mask;
++
++	if ((port < AT91_PIO_PORTS) && (pin < 32)) {
++		mask = 1 << pin;
++		writel(readl(&pio->port[port].schmitt) | mask,
++			&pio->port[port].schmitt);
++	}
++	return 0;
++}
++#endif
++
++/*
+  * enable/disable the multi-driver. This is only valid for output and
+  * allows the output pin to run as an open collector output.
+  */
+ int at91_set_pio_multi_drive(unsigned port, unsigned pin, int is_on)
+ {
+-	at91_pio_t	*pio 	= (at91_pio_t *) AT91_PIO_BASE;
++	at91_pio_t	*pio	= (at91_pio_t *) AT91_PIO_BASE;
+ 	u32		mask;
+ 
+ 	if ((port < AT91_PIO_PORTS) && (pin < 32)) {
+@@ -184,7 +303,7 @@ int at91_set_pio_multi_drive(unsigned port, unsigned pin, int is_on)
+  */
+ int at91_set_pio_value(unsigned port, unsigned pin, int value)
+ {
+-	at91_pio_t	*pio 	= (at91_pio_t *) AT91_PIO_BASE;
++	at91_pio_t	*pio	= (at91_pio_t *) AT91_PIO_BASE;
+ 	u32		mask;
+ 
+ 	if ((port < AT91_PIO_PORTS) && (pin < 32)) {
+diff --git a/drivers/mtd/nand/atmel_nand.c b/drivers/mtd/nand/atmel_nand.c
+index d5eb54a..0ce3426 100644
+--- a/drivers/mtd/nand/atmel_nand.c
++++ b/drivers/mtd/nand/atmel_nand.c
+@@ -33,12 +33,49 @@
+ 
+ #ifdef CONFIG_ATMEL_NAND_HWECC
+ 
++#ifndef CONFIG_ATMEL_NAND_HW_PMECC
++
+ /* Register access macros */
+ #define ecc_readl(add, reg)				\
+ 	readl(AT91_BASE_SYS + add + ATMEL_ECC_##reg)
+ #define ecc_writel(add, reg, value)			\
+ 	writel((value), AT91_BASE_SYS + add + ATMEL_ECC_##reg)
+ 
++#else
++
++/* Register access macros for PMECC */
++#define pmecc_readl(addr, reg) \
++	readl(AT91_BASE_SYS + (addr) + ATMEL_PMECC_##reg)
++
++#define pmecc_writel(addr, reg, value) \
++	writel((value), AT91_BASE_SYS + (addr) + ATMEL_PMECC_##reg)
++
++#define pmecc_readb_ecc(addr, sector, n) \
++	readb(AT91_BASE_SYS + (addr) + ATMEL_PMECC_ECCx + \
++			((sector) * 0x40) + (n))
++
++#define pmecc_readl_rem(addr, sector, n) \
++	readl(AT91_BASE_SYS + (addr) + ATMEL_PMECC_REMx + \
++			((sector) * 0x40) + (n))
++
++#define pmerrloc_readl(addr, reg) \
++	readl(AT91_BASE_SYS + (addr) + ATMEL_PMERRLOC_##reg)
++
++#define pmerrloc_writel(addr, reg, value) \
++	writel((value), AT91_BASE_SYS + (addr) + ATMEL_PMERRLOC_##reg)
++
++#define pmerrloc_writel_sigma(addr, n, value) \
++	writel((value), AT91_BASE_SYS + (addr) + ATMEL_PMERRLOC_SIGMAx + \
++			((n) * 4))
++
++#define pmerrloc_readl_sigma(addr, n) \
++	readl(AT91_BASE_SYS + (addr) + ATMEL_PMERRLOC_SIGMAx + ((n) * 4))
++
++#define pmerrloc_readl_el(addr, n) \
++	readl(AT91_BASE_SYS + (addr) + ATMEL_PMERRLOC_ELx + ((n) * 4))
++
++#endif
++
+ #include "atmel_nand_ecc.h"	/* Hardware ECC registers */
+ 
+ /* oob layout for large page size
+@@ -67,6 +104,17 @@ static struct nand_ecclayout atmel_oobinfo_small = {
+ 	},
+ };
+ 
++static struct nand_ecclayout atmel_oobinfo_2048 = {
++	.eccbytes = 16,
++	.eccpos = { 48, 49, 50, 51, 52, 53, 54, 55,
++		    56, 57, 58, 59, 60, 61, 62, 63
++		  },
++	.oobfree = {
++		{2, 46},
++	},
++};
++
++#ifndef CONFIG_ATMEL_NAND_HW_PMECC
+ /*
+  * Calculate HW ECC
+  *
+@@ -232,66 +280,19 @@ static int atmel_nand_correct(struct mtd_info *mtd, u_char *dat,
+ static void atmel_nand_hwctl(struct mtd_info *mtd, int mode)
+ {
+ }
+-#endif
+ 
+-static void at91_nand_hwcontrol(struct mtd_info *mtd,
+-					 int cmd, unsigned int ctrl)
++static void atmel_nand_hwecc_init(struct nand_chip *nand)
+ {
+-	struct nand_chip *this = mtd->priv;
+-
+-	if (ctrl & NAND_CTRL_CHANGE) {
+-		ulong IO_ADDR_W = (ulong) this->IO_ADDR_W;
+-		IO_ADDR_W &= ~(CONFIG_SYS_NAND_MASK_ALE
+-			     | CONFIG_SYS_NAND_MASK_CLE);
+-
+-		if (ctrl & NAND_CLE)
+-			IO_ADDR_W |= CONFIG_SYS_NAND_MASK_CLE;
+-		if (ctrl & NAND_ALE)
+-			IO_ADDR_W |= CONFIG_SYS_NAND_MASK_ALE;
+-
+-		at91_set_gpio_value(CONFIG_SYS_NAND_ENABLE_PIN,
+-				    !(ctrl & NAND_NCE));
+-		this->IO_ADDR_W = (void *) IO_ADDR_W;
+-	}
+-
+-	if (cmd != NAND_CMD_NONE)
+-		writeb(cmd, this->IO_ADDR_W);
+-}
+-
+-#ifdef CONFIG_SYS_NAND_READY_PIN
+-static int at91_nand_ready(struct mtd_info *mtd)
+-{
+-	return at91_get_gpio_value(CONFIG_SYS_NAND_READY_PIN);
+-}
+-#endif
+-
+-int board_nand_init(struct nand_chip *nand)
+-{
+-#ifdef CONFIG_ATMEL_NAND_HWECC
+ 	static int chip_nr = 0;
+ 	struct mtd_info *mtd;
+-#endif
+-
+-	nand->ecc.mode = NAND_ECC_SOFT;
+-#ifdef CONFIG_SYS_NAND_DBW_16
+-	nand->options = NAND_BUSWIDTH_16;
+-#endif
+-	nand->cmd_ctrl = at91_nand_hwcontrol;
+-#ifdef CONFIG_SYS_NAND_READY_PIN
+-	nand->dev_ready = at91_nand_ready;
+-#endif
+-	nand->chip_delay = 20;
+ 
+-#ifdef CONFIG_ATMEL_NAND_HWECC
+ 	nand->ecc.mode = NAND_ECC_HW;
+ 	nand->ecc.calculate = atmel_nand_calculate;
+ 	nand->ecc.correct = atmel_nand_correct;
+ 	nand->ecc.hwctl = atmel_nand_hwctl;
+ 	nand->ecc.read_page = atmel_nand_read_page;
+ 	nand->ecc.bytes = 4;
+-#endif
+ 
+-#ifdef CONFIG_ATMEL_NAND_HWECC
+ 	mtd = &nand_info[chip_nr++];
+ 	mtd->priv = nand;
+ 
+@@ -337,7 +338,714 @@ int board_nand_init(struct nand_chip *nand)
+ 			break;
+ 		}
+ 	}
++	return;
++}
++#else
++
++#define NB_ERROR_MAX	25
++struct atmel_nand_host {
++	void *ecc;
++	void *pmerrloc_base;
++	void *rom_base;
++
++	/* defines the error correcting capability
++	 * selected at encoding or decoding time
++	 */
++	int tt;
++	/* The number of ecc bytes for one sector */
++	int ecc_bytes_per_sector;
++	/* degree of the remainders, GF(2**mm) */
++	int mm;
++	/* length of codeword, nn=2**mm -1 */
++	int nn;
++	/* sector number per page */
++	int sector_number;
++	/* sector size in bytes */
++	int sector_size;
++	short *alpha_to;
++	short *index_of;
++	short partial_syn[100];
++	short si[100];
++	/* Sigma table */
++	short smu[NB_ERROR_MAX + 2][2 * NB_ERROR_MAX + 1];
++	/** polynomal order */
++	short lmu[NB_ERROR_MAX + 1];
++	u8 ecc_table[42 * 8];
++};
++
++static struct atmel_nand_host pmecc_data;
++
++static void pmecc_gen_syndrome(struct mtd_info *mtd, int32_t sector)
++{
++	int32_t i;
++	u32 value;
++	struct nand_chip *nand_chip = mtd->priv;
++	struct atmel_nand_host *host = nand_chip->priv;
++
++	/* Fill odd syndromes */
++	for (i = 0; i < host->tt; i++) {
++		value = pmecc_readl_rem(host->ecc, sector, i / 2);
++		if (i % 2 == 0)
++			host->partial_syn[(2 * i) + 1] = value & 0xffff;
++		else
++			host->partial_syn[(2 * i) + 1] = (value & 0xffff0000)
++							  >> 16;
++	}
++}
++
++static uint32_t pmecc_substitute(struct mtd_info *mtd)
++{
++	int32_t i, j;
++	struct nand_chip *nand_chip = mtd->priv;
++	struct atmel_nand_host *host = nand_chip->priv;
++	int16_t *si;
++	int16_t *partial_syn = host->partial_syn;
++	int16_t *alpha_to = host->alpha_to;
++	int16_t *index_of = host->index_of;
++
++	/* si[] is a table that holds the current syndrome value,
++	 * an element of that table belongs to the field
++	 */
++	si = host->si;
++
++	for (i = 1; i < 2 * NB_ERROR_MAX; i++)
++		si[i] = 0;
++
++	/* Computation 2t syndromes based on S(x) */
++	/* Odd syndromes */
++	for (i = 1; i <= 2 * host->tt - 1; i = i + 2) {
++		si[i] = 0;
++		for (j = 0; j < host->mm; j++) {
++			if (partial_syn[i] & ((unsigned short)0x1 << j))
++				si[i] = alpha_to[(i * j)] ^ si[i];
++		}
++	}
++	/* Even syndrome = (Odd syndrome) ** 2 */
++	for (i = 2; i <= 2 * host->tt; i = i + 2) {
++		j = i / 2;
++		if (si[j] == 0)
++			si[i] = 0;
++		else
++			si[i] = alpha_to[(2 * index_of[si[j]]) % host->nn];
++	}
++
++	return 0;
++}
++
++static uint32_t pmecc_get_sigma(struct mtd_info *mtd)
++{
++	int32_t i, j, k;
++	struct nand_chip *nand_chip = mtd->priv;
++	struct atmel_nand_host *host = nand_chip->priv;
++	unsigned int dmu_0_count, tmp;
++	short *lmu = host->lmu;
++	short *si = host->si;
++	short tt = host->tt;
++	short *index_of = host->index_of;
++
++	/* mu          */
++	int mu[NB_ERROR_MAX+1];
++
++	/* discrepancy */
++	int dmu[NB_ERROR_MAX+1];
++
++	/* delta order   */
++	int delta[NB_ERROR_MAX+1];
++
++	/* index of largest delta */
++	int ro;
++	int largest;
++	int diff;
++
++	dmu_0_count = 0;
++
++	/* First Row */
++
++	/* Mu */
++	mu[0] = -1;
++
++	/* Actually -1/2 */
++	/* Sigma(x) set to 1 */
++	for (i = 0; i < 2 * NB_ERROR_MAX + 1; i++)
++		host->smu[0][i] = 0;
++
++	host->smu[0][0] = 1;
++
++	/* discrepancy set to 1 */
++	dmu[0] = 1;
++
++	/* polynom order set to 0 */
++	lmu[0] = 0;
++
++	/* delta set to -1 */
++	delta[0]  = (mu[0] * 2 - lmu[0]) >> 1;
++
++	/* Second Row */
++
++	/* Mu */
++	mu[1]  = 0;
++
++	/* Sigma(x) set to 1 */
++	for (i = 0; i < (2 * NB_ERROR_MAX + 1); i++)
++		host->smu[1][i] = 0;
++
++	host->smu[1][0] = 1;
++
++	/* discrepancy set to S1 */
++	dmu[1] = si[1];
++
++	/* polynom order set to 0 */
++	lmu[1] = 0;
++
++	/* delta set to 0 */
++	delta[1]  = (mu[1] * 2 - lmu[1]) >> 1;
++
++	/* Init the Sigma(x) last row */
++	for (i = 0; i < (2 * NB_ERROR_MAX + 1); i++)
++		host->smu[tt + 1][i] = 0;
++
++	for (i = 1; i <= tt; i++) {
++		mu[i+1] = i << 1;
++		/* Compute Sigma (Mu+1)             */
++		/* And L(mu)                        */
++		/* check if discrepancy is set to 0 */
++		if (dmu[i] == 0) {
++			dmu_0_count++;
++
++			if ((tt - (lmu[i] >> 1) - 1) & 0x1)
++				tmp = ((tt - (lmu[i] >> 1) - 1) / 2) + 2;
++			else
++				tmp = ((tt - (lmu[i] >> 1) - 1) / 2) + 1;
++
++			if (dmu_0_count == tmp) {
++				for (j = 0; j <= (lmu[i] >> 1) + 1; j++)
++					host->smu[tt + 1][j] = host->smu[i][j];
++
++				lmu[tt + 1] = lmu[i];
++				return 0;
++			}
++
++			/* copy polynom */
++			for (j = 0; j <= lmu[i] >> 1; j++)
++				host->smu[i + 1][j] = host->smu[i][j];
++
++			/* copy previous polynom order to the next */
++			lmu[i + 1] = lmu[i];
++		} else {
++			ro = 0;
++			largest = -1;
++			/* find largest delta with dmu != 0 */
++			for (j = 0; j < i; j++) {
++				if (dmu[j]) {
++					if (delta[j] > largest) {
++						largest = delta[j];
++						ro = j;
++					}
++				}
++			}
++
++			/* compute difference */
++			diff = (mu[i] - mu[ro]);
++
++			/* Compute degree of the new smu polynomial */
++			if ((lmu[i] >> 1) > ((lmu[ro] >> 1) + diff))
++				lmu[i + 1] = lmu[i];
++			else
++				lmu[i + 1] = ((lmu[ro] >> 1) + diff) * 2;
++
++			/* Init smu[i+1] with 0 */
++			for (k = 0; k < (2 * NB_ERROR_MAX + 1); k++)
++				host->smu[i+1][k] = 0;
++
++			/* Compute smu[i+1] */
++			for (k = 0; k <= lmu[ro] >> 1; k++)
++				if (host->smu[ro][k] && dmu[i]) {
++					tmp = host->index_of[dmu[i]] +
++					    (host->nn
++					    - host->index_of[dmu[ro]]) +
++					    host->index_of[host->smu[ro][k]];
++					host->smu[i + 1][k + diff] =
++						host->alpha_to[tmp % host->nn];
++				}
++
++			for (k = 0; k <= lmu[i]>>1; k++)
++				host->smu[i+1][k] ^= host->smu[i][k];
++		}
++
++		/*************************************************/
++		/*      End Compute Sigma (Mu+1)                 */
++		/*      And L(mu)                                */
++		/*************************************************/
++		/* In either case compute delta */
++		delta[i + 1]  = (mu[i + 1] * 2 - lmu[i + 1]) >> 1;
++
++		/* Do not compute discrepancy for the last iteration */
++		if (i < tt) {
++			for (k = 0 ; k <= (lmu[i + 1] >> 1); k++) {
++				tmp = 2 * (i - 1);
++				if (k == 0)
++					dmu[i + 1] = si[tmp + 3];
++				else if (host->smu[i+1][k] && si[tmp + 3 - k]) {
++					tmp = index_of[host->smu[i + 1][k]] +
++					      index_of[si[2 * (i - 1) + 3 - k]];
++					tmp %= host->nn;
++					dmu[i + 1] = host->alpha_to[tmp] ^
++						     dmu[i + 1];
++				}
++			}
++		}
++	}
++
++	return 0;
++}
++
++static int32_t pmecc_err_location(struct mtd_info *mtd)
++{
++	uint32_t i;
++	/* number of error */
++	uint32_t err_nbr;
++	/* number of roots */
++	uint32_t roots_nbr;
++	uint32_t val;
++	struct nand_chip *nand_chip = mtd->priv;
++	struct atmel_nand_host *host = nand_chip->priv;
++
++	/* Disable PMECC Error Location IP */
++	pmerrloc_writel(host->pmerrloc_base, ELDIS, 0xffffffff);
++	err_nbr = 0;
++
++	for (i = 0; i <= host->lmu[host->tt + 1] >> 1; i++) {
++		pmerrloc_writel_sigma(host->pmerrloc_base, i,
++				      host->smu[host->tt + 1][i]);
++		err_nbr++;
++	}
++
++	val = pmerrloc_readl(host->pmerrloc_base, ELCFG);
++	val |= ((err_nbr - 1) << 16);
++	pmerrloc_writel(host->pmerrloc_base, ELCFG, val);
++
++	/* According to the sector size to set ELEN */
++	pmerrloc_writel(host->pmerrloc_base, ELEN,
++			host->sector_size * 8 + 13 * host->tt);
++
++	while (!(pmerrloc_readl(host->pmerrloc_base, ELISR)
++		& PMERRLOC_CALC_DONE))
++		udelay(10);
++
++
++	roots_nbr = (pmerrloc_readl(host->pmerrloc_base, ELISR)
++		      & PMERRLOC_ERR_NUM_MASK) >> 8;
++
++	/* Number of roots == degree of smu hence <= tt */
++	if (roots_nbr == host->lmu[host->tt + 1] >> 1)
++		return err_nbr - 1;
++
++	/* Number of roots does not match the degree of smu
++	 * unable to correct error */
++	return -1;
++}
++
++static uint32_t pmecc_correct_data(struct mtd_info *mtd, u8 *buf,
++		uint32_t extra_bytes, uint32_t err_nbr)
++{
++	int i = 0;
++	unsigned int byte_pos, bit_pos;
++	unsigned int sector_size, ecc_size;
++	unsigned int tmp;
++	struct nand_chip *nand_chip = mtd->priv;
++	struct atmel_nand_host *host = nand_chip->priv;
++
++	sector_size = host->sector_size;
++	/* Get number of ECC bytes */
++	ecc_size = nand_chip->ecc.bytes;
++
++	while (err_nbr) {
++		byte_pos = (pmerrloc_readl_el(host->pmerrloc_base, i) - 1) / 8;
++		bit_pos = (pmerrloc_readl_el(host->pmerrloc_base, i) - 1) % 8;
++		printk(KERN_WARNING "atmel_nand : one bit error on data."
++			" (data byte : %02x, in page offset : %d,"
++			" bit offset : 0x%x)\n",
++			*(buf + byte_pos), byte_pos, bit_pos);
++		/* If error is located in the data area(not in ECC) */
++		if (byte_pos < (sector_size + extra_bytes)) {
++			/* If the error position is before ECC area */
++			tmp = sector_size + pmecc_readl(host->ecc, SADDR);
++			if (byte_pos < tmp) {
++				if (*(buf + byte_pos) & (1 << bit_pos))
++					*(buf + byte_pos) &=
++						(0xFF ^ (1 << bit_pos));
++				else
++					*(buf + byte_pos) |= (1 << bit_pos);
++			} else {
++				if (*(buf + byte_pos + ecc_size) &
++				     (1 << bit_pos))
++					*(buf + byte_pos + ecc_size) &=
++						(0xFF ^ (1 << bit_pos));
++				else
++					*(buf + byte_pos + ecc_size) |=
++						(1 << bit_pos);
++			}
++		}
++		printk(KERN_WARNING "atmel_nand : error corrected\n");
++		i++;
++		err_nbr--;
++	}
++
++	return 0;
++}
++
++static int32_t pmecc_correction(struct mtd_info *mtd, uint32_t pmecc_stat,
++		unsigned char *buf, u8 *ecc)
++{
++	int i, err_nbr;
++	u8 *buf_pos;
++	struct nand_chip *nand_chip = mtd->priv;
++	struct atmel_nand_host *host = nand_chip->priv;
++	int eccbytes = nand_chip->ecc.bytes;
++
++	pmerrloc_writel(host->pmerrloc_base, ELCFG,
++			(host->sector_size == 512) ? 0 : 1);
++
++	i = 0;
++	while (i < host->sector_number) {
++		err_nbr = 0;
++		if (pmecc_stat & 0x1) {
++			buf_pos = (buf + i * host->sector_size);
++
++			pmecc_gen_syndrome(mtd, i);
++
++			pmecc_substitute(mtd);
++
++			pmecc_get_sigma(mtd);
++
++			err_nbr = pmecc_err_location(mtd);
++			if (err_nbr == -1) {
++				int j;
++
++				for (j = 0; j < eccbytes; j++) {
++					if (ecc[j] != 0xff) {
++						printk(KERN_WARNING "atmel_nand"
++						" : multiple errors detected."
++						" Unable to correct.\n");
++						return 1;
++					}
++				}
++
++				/* Erased page, return OK */
++				return 0;
++			} else
++				pmecc_correct_data(mtd, buf_pos, 0, err_nbr);
++		}
++		i++;
++		pmecc_stat >>= 1;
++	}
++
++	return 0;
++}
++
++static int atmel_nand_pmecc_read_page(struct mtd_info *mtd,
++		struct nand_chip *chip, uint8_t *buf, int page)
++{
++	struct atmel_nand_host *host = chip->priv;
++	int32_t eccsize = chip->ecc.size;
++	uint32_t *eccpos = chip->ecc.layout->eccpos;
++	int32_t err = 0, stat;
++	uint8_t *oob = chip->oob_poi;
++	uint32_t val;
++
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_RST);
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_DISABLE);
++
++	val = pmecc_readl(host->ecc, CFG);
++	/* Setup to read mode */
++	val &= ~PMECC_CFG_WRITE_OP;
++	val |= PMECC_CFG_AUTO_ENABLE;
++	pmecc_writel(host->ecc, CFG, val);
++
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_ENABLE);
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_DATA);
++
++	chip->read_buf(mtd, buf, eccsize);
++	chip->read_buf(mtd, oob, mtd->oobsize);
++
++	while (pmecc_readl(host->ecc, SR) & PMECC_SR_BUSY)
++		udelay(1);
++
++	stat = pmecc_readl(host->ecc, ISR);
++
++	if (stat != 0) {
++		if (pmecc_correction(mtd, stat, buf, &oob[eccpos[0]]))
++			err = -1;
++	}
++
++	return err;
++}
++
++static void atmel_nand_pmecc_write_page(struct mtd_info *mtd,
++		struct nand_chip *chip, const uint8_t *buf)
++{
++	int i, j;
++	struct atmel_nand_host *host = chip->priv;
++	uint32_t *eccpos = chip->ecc.layout->eccpos;
++	uint32_t val;
++
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_RST);
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_DISABLE);
++
++	val = pmecc_readl(host->ecc, CFG);
++	val |= PMECC_CFG_WRITE_OP;
++	val &= ~PMECC_CFG_AUTO_ENABLE;
++	pmecc_writel(host->ecc, CFG, val);
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_ENABLE);
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_DATA);
++	chip->write_buf(mtd, buf, mtd->writesize);
++
++	while (pmecc_readl(host->ecc, SR) & PMECC_SR_BUSY)
++		udelay(1);
++
++	for (i = 0; i < host->sector_number; i++) {
++		for (j = 0; j < host->ecc_bytes_per_sector; j++) {
++			int pos;
++
++			pos = i * host->ecc_bytes_per_sector + j;
++			chip->oob_poi[eccpos[pos]] =
++				pmecc_readb_ecc(host->ecc, i, j);
++		}
++	}
++	chip->write_buf(mtd, chip->oob_poi, mtd->oobsize);
++
++	return;
++}
++
++static short *pmecc_get_alpha_to(struct atmel_nand_host *host)
++{
++	short *p;
++	if (host->sector_size == 512) {
++		p = (short *)((u32)host->rom_base + 0x8000);
++		return p + 0x2000;
++	} else {
++		p = (short *)((u32)host->rom_base + 0x10000);
++		return p + 0x4000;
++	}
++}
++
++static short *pmecc_get_index_of(struct atmel_nand_host *host)
++{
++	short *p = (short *)host->rom_base;
++	if (host->sector_size == 512)
++		p = (short *)((u32)host->rom_base + 0x8000);
++	else
++		p = (short *)((u32)host->rom_base + 0x10000);
++
++	return p;
++}
++
++static int initialize_pmecc_core(struct mtd_info *mtd)
++{
++	struct nand_chip *nand = mtd->priv;
++	struct atmel_nand_host *host = nand->priv;
++
++	uint32_t val;
++	struct nand_ecclayout *ecc_layout;
++
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_DISABLE);
++	pmecc_writel(host->ecc, CTRL, PMECC_CTRL_RST);
++
++	val = 0;
++	switch (host->tt) {
++	case 2:
++		val = PMECC_CFG_BCH_ERR2;
++		break;
++	case 4:
++		val = PMECC_CFG_BCH_ERR4;
++		break;
++	case 8:
++		val = PMECC_CFG_BCH_ERR8;
++		break;
++	case 12:
++		val = PMECC_CFG_BCH_ERR12;
++		break;
++	case 24:
++		val = PMECC_CFG_BCH_ERR24;
++		break;
++	}
++
++	if (host->sector_size == 512)
++		val |= PMECC_CFG_SECTOR512;
++	else if (host->sector_size == 1024)
++		val |= PMECC_CFG_SECTOR1024;
++
++	switch (host->sector_number) {
++	case 1:
++		val |= PMECC_CFG_PAGE_1SECTOR;
++		break;
++	case 2:
++		val |= PMECC_CFG_PAGE_2SECTORS;
++		break;
++	case 4:
++		val |= PMECC_CFG_PAGE_4SECTORS;
++		break;
++	case 8:
++		val |= PMECC_CFG_PAGE_8SECTORS;
++		break;
++	}
++
++	val |= PMECC_CFG_READ_OP | PMECC_CFG_SPARE_DISABLE
++		| PMECC_CFG_AUTO_DISABLE;
++	pmecc_writel(host->ecc, CFG, val);
++
++	ecc_layout = nand->ecc.layout;
++	pmecc_writel(host->ecc, SAREA, mtd->oobsize - 1);
++	pmecc_writel(host->ecc, SADDR, ecc_layout->eccpos[0]);
++	pmecc_writel(host->ecc, EADDR,
++			ecc_layout->eccpos[ecc_layout->eccbytes - 1]);
++	pmecc_writel(host->ecc, CLK, PMECC_CLK_133MHZ);
++	pmecc_writel(host->ecc, IDR, 0xff);
++
++	val = pmecc_readl(host->ecc, CTRL);
++	val |= PMECC_CTRL_ENABLE;
++	pmecc_writel(host->ecc, CTRL, val);
++
++	return 0;
++}
++
++static void atmel_nand_pmecc_init(struct nand_chip *nand)
++{
++	static int chip_nr = 0;
++	struct mtd_info *mtd;
++	struct atmel_nand_host *host;
++	nand->priv = &pmecc_data;
++
++	nand->ecc.mode = NAND_ECC_HW;
++	nand->ecc.calculate = 0;
++	nand->ecc.correct = 0;
++	nand->ecc.hwctl = 0;
++	nand->ecc.read_page = atmel_nand_pmecc_read_page;
++	nand->ecc.write_page = atmel_nand_pmecc_write_page;
++
++	mtd = &nand_info[chip_nr++];
++	mtd->priv = nand;
++	host = nand->priv;
++
++	/* Detect NAND chips */
++	if (nand_scan_ident(mtd, 1)) {
++		printk(KERN_WARNING "NAND Flash not found !\n");
++		return;
++	}
++
++	if (nand->ecc.mode == NAND_ECC_HW) {
++		/* ECC is calculated for the whole page (1 step) */
++		nand->ecc.size = mtd->writesize;
++
++		/* set ECC page size and oob layout */
++		switch (mtd->writesize) {
++		case 512:
++			/* not implement yet */
++			BUG();
++			break;
++		case 1024:
++			/* not implement yet */
++			BUG();
++			break;
++		case 2048:
++			nand->ecc.bytes = 16;
++			nand->ecc.steps = 1;
++			nand->ecc.layout = &atmel_oobinfo_2048;
++			host->ecc = (void *)CONFIG_SYS_NAND_PMECC_BASE;
++			host->pmerrloc_base = (void *)CONFIG_SYS_NAND_PMERRLOC_BASE;
++			host->rom_base = (void *)AT91SAM9X5_ROM_BASE;
++			host->mm = 13;
++			host->nn = (1 << host->mm) - 1;
++			host->tt = 2;
++			host->sector_size = 512;
++			host->sector_number = mtd->writesize
++						/ host->sector_size;
++			host->ecc_bytes_per_sector = 4;
++			host->alpha_to = pmecc_get_alpha_to(host);
++			host->index_of = pmecc_get_index_of(host);
++			break;
++		case 4096:
++			/* not implement yet */
++			BUG();
++			break;
++		default:
++			/* page size not handled by HW ECC */
++			/* switching back to soft ECC */
++			nand->ecc.mode = NAND_ECC_SOFT;
++			nand->ecc.calculate = NULL;
++			nand->ecc.correct = NULL;
++			nand->ecc.hwctl = NULL;
++			nand->ecc.read_page = NULL;
++			nand->ecc.postpad = 0;
++			nand->ecc.prepad = 0;
++			nand->ecc.bytes = 0;
++			break;
++		}
++
++		/* pmecc hardware initialization */
++		initialize_pmecc_core(mtd);
++	}
++	return;
++}
++
+ #endif
+ 
++#endif
++
++static void at91_nand_hwcontrol(struct mtd_info *mtd,
++					 int cmd, unsigned int ctrl)
++{
++	struct nand_chip *this = mtd->priv;
++
++	if (ctrl & NAND_CTRL_CHANGE) {
++		ulong IO_ADDR_W = (ulong) this->IO_ADDR_W;
++		IO_ADDR_W &= ~(CONFIG_SYS_NAND_MASK_ALE
++			     | CONFIG_SYS_NAND_MASK_CLE);
++
++		if (ctrl & NAND_CLE)
++			IO_ADDR_W |= CONFIG_SYS_NAND_MASK_CLE;
++		if (ctrl & NAND_ALE)
++			IO_ADDR_W |= CONFIG_SYS_NAND_MASK_ALE;
++
++		at91_set_gpio_value(CONFIG_SYS_NAND_ENABLE_PIN,
++				    !(ctrl & NAND_NCE));
++		this->IO_ADDR_W = (void *) IO_ADDR_W;
++	}
++
++	if (cmd != NAND_CMD_NONE)
++		writeb(cmd, this->IO_ADDR_W);
++}
++
++#ifdef CONFIG_SYS_NAND_ALT_READY_PIN
++static int at91_nand_ready(struct mtd_info *mtd)
++{
++	return at91_get_gpio_value(CONFIG_SYS_NAND_ALT_READY_PIN);
++}
++#elif defined(CONFIG_SYS_NAND_READY_PIN)
++static int at91_nand_ready(struct mtd_info *mtd)
++{
++	return at91_get_gpio_value(CONFIG_SYS_NAND_READY_PIN);
++}
++#endif
++
++int board_nand_init(struct nand_chip *nand)
++{
++	nand->ecc.mode = NAND_ECC_SOFT;
++#ifdef CONFIG_SYS_NAND_DBW_16
++	nand->options = NAND_BUSWIDTH_16;
++#endif
++	nand->cmd_ctrl = at91_nand_hwcontrol;
++#if defined(CONFIG_SYS_NAND_READY_PIN) || defined(CONFIG_SYS_NAND_ALT_READY_PIN)
++	nand->dev_ready = at91_nand_ready;
++#endif
++	nand->chip_delay = 20;
++
++#ifdef CONFIG_ATMEL_NAND_HWECC
++#ifdef CONFIG_ATMEL_NAND_HW_PMECC
++	atmel_nand_pmecc_init(nand);
++#else
++	atmel_nand_hwecc_init(nand);
++#endif
++#endif
+ 	return 0;
+ }
+diff --git a/drivers/mtd/nand/atmel_nand_ecc.h b/drivers/mtd/nand/atmel_nand_ecc.h
+index 1ee7f99..c97c290 100644
+--- a/drivers/mtd/nand/atmel_nand_ecc.h
++++ b/drivers/mtd/nand/atmel_nand_ecc.h
+@@ -33,4 +33,77 @@
+ #define ATMEL_ECC_NPR		0x10			/* NParity register */
+ #define		ATMEL_ECC_NPARITY	(0xffff << 0)		/* NParity */
+ 
++#define ATMEL_PMECC_CFG			0x000
++#define		PMECC_CFG_BCH_ERR2		(0 << 0)
++#define		PMECC_CFG_BCH_ERR4		(1 << 0)
++#define		PMECC_CFG_BCH_ERR8		(2 << 0)
++#define		PMECC_CFG_BCH_ERR12		(3 << 0)
++#define		PMECC_CFG_BCH_ERR24		(4 << 0)
++
++#define		PMECC_CFG_SECTOR512		(0 << 4)
++#define		PMECC_CFG_SECTOR1024		(1 << 4)
++
++#define		PMECC_CFG_PAGE_1SECTOR		(0 << 8)
++#define		PMECC_CFG_PAGE_2SECTORS		(1 << 8)
++#define		PMECC_CFG_PAGE_4SECTORS		(2 << 8)
++#define		PMECC_CFG_PAGE_8SECTORS		(3 << 8)
++
++#define		PMECC_CFG_READ_OP		(0 << 12)
++#define		PMECC_CFG_WRITE_OP		(1 << 12)
++
++#define		PMECC_CFG_SPARE_ENABLE		(1 << 16)
++#define		PMECC_CFG_SPARE_DISABLE		(0 << 16)
++
++#define		PMECC_CFG_AUTO_ENABLE		(1 << 20)
++#define		PMECC_CFG_AUTO_DISABLE		(0 << 20)
++
++#define ATMEL_PMECC_SAREA		0x004
++#define ATMEL_PMECC_SADDR		0x008
++#define ATMEL_PMECC_EADDR		0x00c
++#define ATMEL_PMECC_CLK			0x010
++#define		PMECC_CLK_133MHZ		(2 << 0)
++
++#define ATMEL_PMECC_CTRL		0x014
++#define		PMECC_CTRL_RST			(1 << 0)
++#define		PMECC_CTRL_DATA			(1 << 1)
++#define		PMECC_CTRL_USER			(1 << 2)
++#define		PMECC_CTRL_ENABLE		(1 << 4)
++#define		PMECC_CTRL_DISABLE		(1 << 5)
++
++#define ATMEL_PMECC_SR			0x018
++#define		PMECC_SR_BUSY			(1 << 0)
++#define		PMECC_SR_ENABLE			(1 << 4)
++
++#define ATMEL_PMECC_IER			0x01c
++#define		PMECC_IER_ENABLE		(1 << 0)
++#define ATMEL_PMECC_IDR			0x020
++#define		PMECC_IER_DISABLE		(1 << 0)
++#define ATMEL_PMECC_IMR			0x024
++#define		PMECC_IER_MASK			(1 << 0)
++#define ATMEL_PMECC_ISR			0x028
++#define ATMEL_PMECC_ECCx		0x040
++#define ATMEL_PMECC_REMx		0x240
++
++/* PMERRLOC Register Definitions */
++#define ATMEL_PMERRLOC_ELCFG		0x000
++#define		PMERRLOC_ELCFG_SECTOR_512	(0 << 0)
++#define		PMERRLOC_ELCFG_SECTOR_1024	(1 << 0)
++#define		PMERRLOC_ELCFG_NUM_ERRORS(n)	((n) << 16)
++
++#define ATMEL_PMERRLOC_ELPRIM		0x004
++#define ATMEL_PMERRLOC_ELEN		0x008
++#define ATMEL_PMERRLOC_ELDIS		0x00c
++#define		PMERRLOC_DISABLE		(1 << 0)
++
++#define ATMEL_PMERRLOC_ELSR		0x010
++#define		PMERRLOC_ELSR_BUSY		(1 << 0)
++#define ATMEL_PMERRLOC_ELIER		0x014
++#define ATMEL_PMERRLOC_ELIDR		0x018
++#define ATMEL_PMERRLOC_ELIMR		0x01c
++#define ATMEL_PMERRLOC_ELISR		0x020
++#define		PMERRLOC_ERR_NUM_MASK		(0x1f << 8)
++#define		PMERRLOC_CALC_DONE			(1 << 0)
++#define ATMEL_PMERRLOC_SIGMAx		0x028
++#define ATMEL_PMERRLOC_ELx		0x08c
++
+ #endif
+diff --git a/drivers/mtd/nand/nand_base.c b/drivers/mtd/nand/nand_base.c
+index 7171bdd..f351467 100644
+--- a/drivers/mtd/nand/nand_base.c
++++ b/drivers/mtd/nand/nand_base.c
+@@ -2001,13 +2001,6 @@ static int nand_do_write_ops(struct mtd_info *mtd, loff_t to,
+ 	if (!writelen)
+ 		return 0;
+ 
+-	/* reject writes, which are not page aligned */
+-	if (NOTALIGNED(to) || NOTALIGNED(ops->len)) {
+-		printk(KERN_NOTICE "nand_write: "
+-		       "Attempt to write not page aligned data\n");
+-		return -EINVAL;
+-	}
+-
+ 	column = to & (mtd->writesize - 1);
+ 	subpage = column || (writelen & (mtd->writesize - 1));
+ 
+diff --git a/drivers/mtd/nand/nand_util.c b/drivers/mtd/nand/nand_util.c
+index 29c42f7..e7c3887 100644
+--- a/drivers/mtd/nand/nand_util.c
++++ b/drivers/mtd/nand/nand_util.c
+@@ -456,6 +456,36 @@ static size_t get_len_incl_bad (nand_info_t *nand, loff_t offset,
+ }
+ 
+ /**
++ * drop_ffs:
++ *
++ * Count non 0xff-all pages.
++ *
++ * @param nand		NAND device
++ * @param buf		Buffer to read from
++ * @param len		buffer length
++ */
++static size_t drop_ffs(const nand_info_t *nand, const u_char *buf,
++			const size_t *len)
++{
++	size_t i, l = *len;
++
++	for (i = l - 1; i >= 0; i--)
++		if (buf[i] != 0xFF)
++			break;
++
++	/* The resulting length must be aligned to the minimum flash I/O size */
++	l = i + 1;
++	l = (l + nand->writesize - 1) / nand->writesize;
++	l *=  nand->writesize;
++
++	/*
++	 * since the input length may be unaligned, prevent access past the end
++	 * of the buffer
++	 */
++	return min(l, *len);
++}
++
++/**
+  * nand_write_skip_bad:
+  *
+  * Write image to NAND flash.
+@@ -463,14 +493,15 @@ static size_t get_len_incl_bad (nand_info_t *nand, loff_t offset,
+  * block instead as long as the image is short enough to fit even after
+  * skipping the bad blocks.
+  *
+- * @param nand  	NAND device
++ * @param nand		NAND device
+  * @param offset	offset in flash
+  * @param length	buffer length
+- * @param buf           buffer to read from
++ * @param buf		buffer to read from
++ * @param flags		flags to activate features as droping all-0xff pages
+  * @return		0 in case of success
+  */
+ int nand_write_skip_bad(nand_info_t *nand, loff_t offset, size_t *length,
+-			u_char *buffer)
++			u_char *buffer, int flags)
+ {
+ 	int rval;
+ 	size_t left_to_write = *length;
+@@ -478,8 +509,7 @@ int nand_write_skip_bad(nand_info_t *nand, loff_t offset, size_t *length,
+ 	u_char *p_buffer = buffer;
+ 
+ 	/* Reject writes, which are not page aligned */
+-	if ((offset & (nand->writesize - 1)) != 0 ||
+-	    (*length & (nand->writesize - 1)) != 0) {
++	if ((offset & (nand->writesize - 1)) != 0) {
+ 		printf ("Attempt to write non page aligned data\n");
+ 		return -EINVAL;
+ 	}
+@@ -491,18 +521,19 @@ int nand_write_skip_bad(nand_info_t *nand, loff_t offset, size_t *length,
+ 		return -EINVAL;
+ 	}
+ 
+-	if (len_incl_bad == *length) {
++	if ((len_incl_bad == *length) && !(flags & WITH_DROP_FFS)) {
+ 		rval = nand_write (nand, offset, length, buffer);
+ 		if (rval != 0)
+ 			printf ("NAND write to offset %llx failed %d\n",
+ 				offset, rval);
+ 
++		printf("[nand_write_skip_bad] return rval\n");
+ 		return rval;
+ 	}
+ 
+ 	while (left_to_write > 0) {
+ 		size_t block_offset = offset & (nand->erasesize - 1);
+-		size_t write_size;
++		size_t write_size, truncated_write_size;
+ 
+ 		WATCHDOG_RESET ();
+ 
+@@ -518,7 +549,13 @@ int nand_write_skip_bad(nand_info_t *nand, loff_t offset, size_t *length,
+ 		else
+ 			write_size = nand->erasesize - block_offset;
+ 
+-		rval = nand_write (nand, offset, &write_size, p_buffer);
++		if (flags & WITH_DROP_FFS)
++			truncated_write_size = drop_ffs(nand, p_buffer,
++					&write_size);
++		else
++			truncated_write_size = write_size;
++
++		rval = nand_write (nand, offset, &truncated_write_size, p_buffer);
+ 		if (rval != 0) {
+ 			printf ("NAND write to offset %llx failed %d\n",
+ 				offset, rval);
+diff --git a/drivers/mtd/spi/atmel.c b/drivers/mtd/spi/atmel.c
+index 8306c00..3705aac 100644
+--- a/drivers/mtd/spi/atmel.c
++++ b/drivers/mtd/spi/atmel.c
+@@ -25,6 +25,33 @@
+ #define AT45_STATUS_P2_PAGE_SIZE	(1 << 0)
+ #define AT45_STATUS_READY		(1 << 7)
+ 
++/* AT25-specific commands */
++#define CMD_AT25_READ_STATUS		0x05
++#define CMD_AT25_WRITE_STATUS		0x01
++
++#define CMD_AT25_BYTE_PAGE_PROGRAM	0x02
++#define CMD_AT25_ERASE_BLOCK_4K		0x20
++#define CMD_AT25_ERASE_BLOCK_32K	0x52
++#define CMD_AT25_ERASE_BLOCK_64K	0xD8
++
++#define CMD_AT25_WRITE_ENABLE	0x06
++#define CMD_AT25_WRITE_DISABLE	0x04
++
++/* AT25 status register bits */
++#define AT25_STATUS_READYBUSY		(1 << 0)
++#define AT25_STATUS_READYBUSY_READY	(0 << 0)
++#define AT25_STATUS_READYBUSY_BUSY	(1 << 0)
++#define AT25_ERASE_PROGRAM_ERROR	(1 << 5)
++#define AT25_STATUS_SWP			(3 << 2)
++#define AT25_STATUS_SWP_PROTECTALL	(3 << 2)
++#define AT25_STATUS_SWP_PROTECTSOME	(1 << 2)
++#define AT25_STATUS_SWP_PROTECTNONE	(0 << 2)
++#define AT25_STATUS_SPRL		(1 << 7)
++#define AT25_STATUS_SPRL_UNLOCKED	(0 << 7)
++#define AT25_STATUS_SPRL_LOCKED		(1 << 7)
++
++#define BLOCK_SIZE_4K		(4 * 1024)
++
+ /* DataFlash family IDs, as obtained from the second idcode byte */
+ #define DF_FAMILY_AT26F			0
+ #define DF_FAMILY_AT45			1
+@@ -109,6 +136,14 @@ static const struct atmel_spi_flash_params atmel_spi_flash_table[] = {
+ 		.nr_sectors		= 32,
+ 		.name			= "AT45DB642D",
+ 	},
++	{
++		.idcode1		= 0x47,
++		.l2_page_size		= 8,	/* 256 bytes per page */
++		.pages_per_block	= 16,	/* 4k bytes per block */
++		.blocks_per_sector	= 16,	/* 64k bytes per sector*/
++		.nr_sectors		= 64,	/* 64 sectors */
++		.name			= "AT25DF321",
++	},
+ };
+ 
+ static int at45_wait_ready(struct spi_flash *flash, unsigned long timeout)
+@@ -464,6 +499,255 @@ out:
+ 	return ret;
+ }
+ 
++static int at25_read_status(struct spi_flash *flash)
++{
++	struct spi_slave *spi = flash->spi;
++	int ret;
++	u8 cmd = CMD_AT25_READ_STATUS;
++	u8 status;
++
++	ret = spi_flash_cmd_read(spi, &cmd, 1, &status, 1);
++
++	if (ret < 0) {
++		debug("SF: Error occured when read AT25 status\n");
++		return ret;
++	} else
++		return status;
++}
++
++static int at25_wait_ready(struct spi_flash *flash, unsigned long timeout)
++{
++	unsigned long timebase;
++	int ret;
++	u8 status;
++
++	timebase = get_timer(0);
++
++	do {
++		ret = at25_read_status(flash);
++		if (ret < 0)
++			return -1;
++		else
++			status = ret;
++
++		if ((status & AT25_STATUS_READYBUSY)
++				== AT25_STATUS_READYBUSY_READY)
++			break;
++	} while (get_timer(timebase) < timeout);
++
++	if ((status & AT25_STATUS_READYBUSY) == AT25_STATUS_READYBUSY_READY)
++		return 0;
++
++	/* Timed out */
++	return -1;
++}
++
++static int at25_write_status(struct spi_flash *flash, u8 data)
++{
++	struct spi_slave *spi = flash->spi;
++	u8 cmd = CMD_AT25_WRITE_STATUS;
++
++	return spi_flash_cmd_write(spi, &cmd, 1, &data, 1);
++}
++
++static int at25_write_enable(struct spi_flash *flash, int is_enable)
++{
++	struct spi_slave *spi = flash->spi;
++	int ret;
++	u8 cmd;
++
++	if (is_enable)
++		cmd = CMD_AT25_WRITE_ENABLE;
++	else
++		cmd = CMD_AT25_WRITE_DISABLE;
++
++	ret = spi_xfer(spi, 8, &cmd, NULL, SPI_XFER_BEGIN);
++	if (ret)
++		return -1;
++
++	/* Deactivate CS */
++	spi_xfer(spi, 0, NULL, NULL, SPI_XFER_END);
++
++	return 0;
++}
++
++static int at25_unprotect(struct spi_flash *flash)
++{
++	int ret;
++	u8 status;
++
++	ret = at25_read_status(flash);
++	if (ret < 0)
++		debug("SF: Read AT25 status failed\n");
++	else
++		status = ret;
++
++	if ((status & AT25_STATUS_SWP) == AT25_STATUS_SWP_PROTECTNONE) {
++		/* Protection already disabled */
++		return 0;
++	}
++
++	/* Check if sector protection registers are locked */
++	if ((status & AT25_STATUS_SPRL) == AT25_STATUS_SPRL_LOCKED) {
++		/* Unprotect sector protection registers. */
++		at25_write_enable(flash, 1);
++		at25_write_status(flash, 0);
++	}
++
++	/* Perform a global unprotect command */
++	at25_write_enable(flash, 1);
++	at25_write_status(flash, 0);
++
++	/* Check the new status */
++	status = at25_read_status(flash);
++	if (ret < 0)
++		return -1;
++
++	if ((status & (AT25_STATUS_SPRL | AT25_STATUS_SWP)) != 0) {
++		debug("SF: Unprotect AT25 failed\n");
++		return -1;
++	} else
++		return 0;
++}
++
++int dataflash_erase_block_at25(struct spi_flash *flash, u32 offset)
++{
++	/* Using 4k block erase. */
++	u32 addr = offset;
++	int ret;
++	u8 cmd[4];
++
++	if (offset % BLOCK_SIZE_4K != 0)
++		return -1;
++
++	ret = at25_write_enable(flash, 1);
++	if (ret < 0) {
++		debug("SF: Enable write AT25 failed\n");
++		return ret;
++	}
++
++	cmd[0] = CMD_AT25_ERASE_BLOCK_4K;
++	cmd[1] = addr >> 16;
++	cmd[2] = addr >> 8;
++	cmd[3] = addr;
++	ret = spi_flash_cmd_write(flash->spi, cmd, 4, NULL, 0);
++	if (ret < 0) {
++		debug("SF: AT25 4k block erase failed\n");
++		return ret;
++	}
++
++	ret = at25_wait_ready(flash, SPI_FLASH_PAGE_ERASE_TIMEOUT);
++	if (ret < 0) {
++		debug("SF: AT25 4k block erase timed out\n");
++		return ret;
++	}
++
++	return ret;
++}
++
++int dataflash_erase_at25(struct spi_flash *flash, u32 offset, size_t len)
++{
++	int ret;
++	u32 addr;
++
++	/*
++	 * TODO: This function currently uses 4k block erase only. We can
++	 * probably speed things up by using 32k/64k block erase or chip
++	 * erase when possible.
++	 */
++
++	if (offset % BLOCK_SIZE_4K || len % BLOCK_SIZE_4K) {
++		debug("SF: Erase offset/length not multiple of block size\n");
++		return -1;
++	}
++
++	ret = spi_claim_bus(flash->spi);
++	if (ret) {
++		debug("SF: Unable to claim SPI bus\n");
++		return ret;
++	}
++
++	ret = at25_unprotect(flash);
++	if (ret < 0)
++		goto out;
++
++	/* Use 4k block erase. */
++	for (addr = offset; addr < offset + len; addr += BLOCK_SIZE_4K) {
++		if (offset % BLOCK_SIZE_4K != 0)
++			addr = (addr >> 12) << 12;	/* 4k size align. */
++
++		ret = dataflash_erase_block_at25(flash, addr);
++		if (ret < 0)
++			goto out;
++	}
++
++	debug("SF: AT25: Successfully erased %zu bytes @ 0x%x\n",
++			len, offset);
++	ret = 0;
++out:
++	spi_release_bus(flash->spi);
++	return ret;
++}
++
++int dataflash_write_at25(struct spi_flash *flash,
++		u32 offset, size_t len, const void *buf)
++{
++	struct atmel_spi_flash *asf = to_atmel_spi_flash(flash);
++	unsigned long page_size;
++	size_t chunk_len;
++	size_t actual;
++	int ret;
++	u8 status;
++	u32 addr;
++	u8 cmd[4];
++	u8 *data = (u8 *)buf;
++
++	page_size = 1 << (asf->params->l2_page_size);
++
++	ret = spi_claim_bus(flash->spi);
++	if (ret) {
++		debug("SF: Unable to claim SPI bus\n");
++		return ret;
++	}
++
++	ret = at25_read_status(flash);
++	if (ret < 0)
++		goto out;
++	else
++		status = ret;
++
++	/* Using page programming. */
++	for (actual = 0; actual < len; actual += chunk_len, data += chunk_len) {
++		chunk_len = min(page_size, len - actual);
++		/* using page programming. */
++		ret = at25_write_enable(flash, 1);
++		if (ret < 0)
++			goto out;
++
++		addr = offset + actual;
++		cmd[0] = CMD_AT25_BYTE_PAGE_PROGRAM;
++		cmd[1] = addr >> 16;
++		cmd[2] = addr >> 8;
++		cmd[3] = addr;
++
++		ret = spi_flash_cmd_write(flash->spi, cmd, 4, data, chunk_len);
++		if (ret < 0) {
++			debug("SF: Page programming AT25 failed\n");
++			goto out;
++		}
++
++		ret = at25_wait_ready(flash, SPI_FLASH_PAGE_ERASE_TIMEOUT);
++		if (ret < 0) {
++			debug("SF: AT25 page programming timed out\n");
++			goto out;
++		}
++	}
++
++out:
++	spi_release_bus(flash->spi);
++	return 0;
++}
++
+ struct spi_flash *spi_flash_probe_atmel(struct spi_slave *spi, u8 *idcode)
+ {
+ 	const struct atmel_spi_flash_params *params;
+@@ -529,6 +813,8 @@ struct spi_flash *spi_flash_probe_atmel(struct spi_slave *spi, u8 *idcode)
+ 	case DF_FAMILY_AT26F:
+ 	case DF_FAMILY_AT26DF:
+ 		asf->flash.read = dataflash_read_fast_p2;
++		asf->flash.write = dataflash_write_at25;
++		asf->flash.erase = dataflash_erase_at25;
+ 		break;
+ 
+ 	default:
+diff --git a/drivers/net/macb.c b/drivers/net/macb.c
+index dcb8850..472b985 100644
+--- a/drivers/net/macb.c
++++ b/drivers/net/macb.c
+@@ -229,7 +229,7 @@ static int macb_send(struct eth_device *netdev, volatile void *packet,
+ 		ctrl = macb->tx_ring[tx_head].ctrl;
+ 		if (ctrl & TXBUF_USED)
+ 			break;
+-		udelay(1);
++		udelay(100);
+ 	}
+ 
+ 	dma_unmap_single(packet, length, paddr);
+@@ -479,7 +479,8 @@ static int macb_init(struct eth_device *netdev, bd_t *bd)
+ #ifdef CONFIG_RMII
+ #if defined(CONFIG_AT91CAP9) || defined(CONFIG_AT91SAM9260) || \
+     defined(CONFIG_AT91SAM9263) || defined(CONFIG_AT91SAM9G20) || \
+-	defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45)
++	defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45) || \
++	defined(CONFIG_AT91SAM9X5)
+ 	macb_writel(macb, USRIO, MACB_BIT(RMII) | MACB_BIT(CLKEN));
+ #else
+ 	macb_writel(macb, USRIO, 0);
+@@ -487,8 +488,14 @@ static int macb_init(struct eth_device *netdev, bd_t *bd)
+ #else
+ #if defined(CONFIG_AT91CAP9) || defined(CONFIG_AT91SAM9260) || \
+     defined(CONFIG_AT91SAM9263) || defined(CONFIG_AT91SAM9G20) || \
+-	defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45)
+-	macb_writel(macb, USRIO, MACB_BIT(CLKEN));
++	defined(CONFIG_AT91SAM9G45) || defined(CONFIG_AT91SAM9M10G45) || \
++	defined(CONFIG_AT91SAM9X5)
++	if (strcmp(netdev->name, "macb1") == 0)
++		/* It's second phy in 9X5 series chip. It only support
++		 * RMII mode. So we still use RMII mode. */
++		macb_writel(macb, USRIO, MACB_BIT(RMII) | MACB_BIT(CLKEN));
++	else
++		macb_writel(macb, USRIO, MACB_BIT(CLKEN));
+ #else
+ 	macb_writel(macb, USRIO, MACB_BIT(MII));
+ #endif
+diff --git a/drivers/serial/atmel_usart.h b/drivers/serial/atmel_usart.h
+index af3773a..336770b 100644
+--- a/drivers/serial/atmel_usart.h
++++ b/drivers/serial/atmel_usart.h
+@@ -291,6 +291,14 @@
+ /* Constants for FI_DI_RATIO */
+ #define USART3_FI_DI_RATIO_DISABLE		0
+ 
++/* DBGU special registers */
++#define USART3_CIDR				0x40	/* Chip ID Register */
++#define USART3_EXID				0x44	/* Chip ID Extension Register */
++
++#define AT91_CIDR_VERSION	(0x1f << 0)		/* Version of the Device */
++#define AT91_CIDR_EXT		(1    << 31)		/* Extension Flag */
++
++
+ /* Bit manipulation macros */
+ #define USART3_BIT(name)				\
+ 	(1 << USART3_##name##_OFFSET)
+diff --git a/drivers/video/atmel_lcdfb.c b/drivers/video/atmel_lcdfb.c
+index db86763..12db707 100644
+--- a/drivers/video/atmel_lcdfb.c
++++ b/drivers/video/atmel_lcdfb.c
+@@ -28,6 +28,9 @@
+ #include <asm/arch/clk.h>
+ #include <lcd.h>
+ #include <atmel_lcdc.h>
++#if defined(CONFIG_AT91SAM9X5)
++#include <atmel_9x5_lcdc.h>
++#endif
+ 
+ int lcd_line_length;
+ int lcd_color_fg;
+@@ -66,10 +69,187 @@ void lcd_setcolreg(ushort regno, ushort red, ushort green, ushort blue)
+ #endif
+ }
+ 
++#if defined(CONFIG_AT91SAM9X5)
++void lcd_9x5_ctrl_init(void *lcdbase)
++{
++	unsigned long value;
++	lcd_dma_desc *desc;
++
++	if (!has_lcdc())
++		return;     /* No lcdc */
++
++	/* Disable DISP signal */
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDDIS, LCDC_LCDDIS_DISPDIS);
++	while ((lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDSR)
++		& LCDC_LCDSR_DISPSTS))
++		udelay(1);
++	/* Disable synchronization */
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDDIS, LCDC_LCDDIS_SYNCDIS);
++	while ((lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDSR)
++		& LCDC_LCDSR_LCDSTS))
++		udelay(1);
++	/* Disable pixel clock */
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDDIS, LCDC_LCDDIS_CLKDIS);
++	while ((lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDSR)
++		& LCDC_LCDSR_CLKSTS))
++		udelay(1);
++	/* Disable PWM */
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDDIS, LCDC_LCDDIS_PWMDIS);
++	while ((lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDSR)
++		& LCDC_LCDSR_PWMSTS))
++		udelay(1);
++
++	/* Set pixel clock */
++	value = get_lcdc_clk_rate(0) / panel_info.vl_clk;
++	if (get_lcdc_clk_rate(0) % panel_info.vl_clk)
++		value++;
++
++	if (value < 1) {
++		/* Using system clock as pixel clock */
++		lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCFG0,
++					LCDC_LCDCFG0_CLKDIV(0)
++					| LCDC_LCDCFG0_CGDISHCR
++					| LCDC_LCDCFG0_CGDISHEO
++					| LCDC_LCDCFG0_CGDISOVR1
++					| LCDC_LCDCFG0_CGDISBASE
++					| LCDC_LCDCFG0_CLKPOL
++					| LCDC_LCDCFG0_CLKSEL);
++
++	} else {
++		lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCFG0,
++				LCDC_LCDCFG0_CLKDIV(value - 2)
++				| LCDC_LCDCFG0_CGDISHCR
++				| LCDC_LCDCFG0_CGDISHEO
++				| LCDC_LCDCFG0_CGDISOVR1
++				| LCDC_LCDCFG0_CGDISBASE
++				| LCDC_LCDCFG0_CLKPOL);
++	}
++
++	/* Initialize control register 5 */
++	value = 0;
++
++	value |= LCDC_LCDCFG5_HSPOL;
++	value |= LCDC_LCDCFG5_VSPOL;
++
++#ifndef LCD_OUTPUT_BPP
++	/* Output is 24bpp */
++	value |= LCDC_LCDCFG5_MODE_OUTPUT_24BPP;
++#else
++	switch (LCD_OUTPUT_BPP) {
++	case 12:
++		value |= LCDC_LCDCFG5_MODE_OUTPUT_12BPP;
++		break;
++	case 16:
++		value |= LCDC_LCDCFG5_MODE_OUTPUT_16BPP;
++		break;
++	case 18:
++		value |= LCDC_LCDCFG5_MODE_OUTPUT_18BPP;
++		break;
++	case 24:
++		value |= LCDC_LCDCFG5_MODE_OUTPUT_24BPP;
++		break;
++	default:
++		BUG();
++		break;
++	}
++#endif
++
++	value |= LCDC_LCDCFG5_GUARDTIME(ATMEL_LCDC_GUARD_TIME);
++	value |= (LCDC_LCDCFG5_DISPDLY | LCDC_LCDCFG5_VSPDLYS);
++
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCFG5, value);
++
++	/* Vertical & Horizontal Timing */
++	value = LCDC_LCDCFG1_VSPW(panel_info.vl_vsync_len - 1);
++	value |= LCDC_LCDCFG1_HSPW(panel_info.vl_hsync_len - 1);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCFG1, value);
++
++	value = LCDC_LCDCFG2_VBPW(panel_info.vl_lower_margin);
++	value |= LCDC_LCDCFG2_VFPW(panel_info.vl_upper_margin - 1);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCFG2, value);
++
++	value = LCDC_LCDCFG3_HBPW(panel_info.vl_right_margin - 1);
++	value |= LCDC_LCDCFG3_HFPW(panel_info.vl_left_margin - 1);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCFG3, value);
++
++	/* Display size */
++	value = LCDC_LCDCFG4_RPF(panel_info.vl_row - 1);
++	value |= LCDC_LCDCFG4_PPL(panel_info.vl_col - 1);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCFG4, value);
++
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASECFG0,
++			LCDC_BASECFG0_BLEN_AHB_INCR4 | LCDC_BASECFG0_DLBO);
++
++	switch (NBITS(panel_info.vl_bpix)) {
++	case 16:
++		lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASECFG1,
++			LCDC_BASECFG1_RGBMODE_16BPP_RGB_565);
++		break;
++	default:
++		BUG();
++		break;
++	}
++
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASECFG2,
++			LCDC_BASECFG2_XSTRIDE(0));
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASECFG3, 0);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASECFG4, LCDC_BASECFG4_DMA);
++
++	/* Disable all interrupts */
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDIDR, ~0UL);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASEIDR, ~0UL);
++
++	/* Setup the DMA descriptor, this descriptor will loop to itself */
++	desc = (lcd_dma_desc *)(lcdbase - 16);
++
++	desc->address = (u32)lcdbase;
++	/* Disable DMA transfer interrupt & descriptor loaded interrupt. */
++	desc->control = LCDC_BASECTRL_ADDIEN | LCDC_BASECTRL_DSCRIEN
++			| LCDC_BASECTRL_DMAIEN | LCDC_BASECTRL_DFETCH;
++	desc->next = (u32)desc;
++
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASEADDR, desc->address);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASECTRL, desc->control);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASENEXT, desc->next);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_BASECHER, LCDC_BASECHER_CHEN
++			| LCDC_BASECHER_UPDATEEN);
++
++	/* Enable LCD */
++	value = lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDEN);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDEN, value
++			| LCDC_LCDEN_CLKEN);
++	while (!(lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDSR)
++		& LCDC_LCDSR_CLKSTS))
++		udelay(1);
++	value = lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDEN);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDEN, value
++			| LCDC_LCDEN_SYNCEN);
++	while (!(lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDSR)
++		& LCDC_LCDSR_LCDSTS))
++		udelay(1);
++	value = lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDEN);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDEN, value
++			| LCDC_LCDEN_DISPEN);
++	while (!(lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDSR)
++		& LCDC_LCDSR_DISPSTS))
++		udelay(1);
++	value = lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDEN);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDEN, value
++			| LCDC_LCDEN_PWMEN);
++	while (!(lcdc_readl(panel_info.mmio, ATMEL_LCDC_LCDSR)
++		& LCDC_LCDSR_PWMSTS))
++		udelay(1);
++}
++#endif
++
+ void lcd_ctrl_init(void *lcdbase)
+ {
+ 	unsigned long value;
+ 
++#if defined(CONFIG_AT91SAM9X5)
++	return lcd_9x5_ctrl_init(lcdbase);
++#endif
++
+ 	/* Turn off the LCD controller and the DMA controller */
+ 	lcdc_writel(panel_info.mmio, ATMEL_LCDC_PWRCON,
+ 		    ATMEL_LCDC_GUARD_TIME << ATMEL_LCDC_GUARDT_OFFSET);
+@@ -96,7 +276,8 @@ void lcd_ctrl_init(void *lcdbase)
+ 	value = (value / 2) - 1;
+ 
+ 	if (!value) {
+-		lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCON1, ATMEL_LCDC_BYPASS);
++		lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCON1,
++				ATMEL_LCDC_BYPASS);
+ 	} else
+ 		lcdc_writel(panel_info.mmio, ATMEL_LCDC_LCDCON1,
+ 			    value << ATMEL_LCDC_CLKVAL_OFFSET);
+@@ -146,14 +327,16 @@ void lcd_ctrl_init(void *lcdbase)
+ 		ATMEL_LCDC_POL_POSITIVE |
+ 		ATMEL_LCDC_ENA_PWMENABLE;
+ 	lcdc_writel(panel_info.mmio, ATMEL_LCDC_CONTRAST_CTR, value);
+-	lcdc_writel(panel_info.mmio, ATMEL_LCDC_CONTRAST_VAL, ATMEL_LCDC_CVAL_DEFAULT);
++	lcdc_writel(panel_info.mmio, ATMEL_LCDC_CONTRAST_VAL,
++			ATMEL_LCDC_CVAL_DEFAULT);
+ 
+ 	/* Set framebuffer DMA base address and pixel offset */
+ 	lcdc_writel(panel_info.mmio, ATMEL_LCDC_DMABADDR1, (u_long)lcdbase);
+ 
+ 	lcdc_writel(panel_info.mmio, ATMEL_LCDC_DMACON, ATMEL_LCDC_DMAEN);
+ 	lcdc_writel(panel_info.mmio, ATMEL_LCDC_PWRCON,
+-		    (ATMEL_LCDC_GUARD_TIME << ATMEL_LCDC_GUARDT_OFFSET) | ATMEL_LCDC_PWR);
++			(ATMEL_LCDC_GUARD_TIME << ATMEL_LCDC_GUARDT_OFFSET)
++			| ATMEL_LCDC_PWR);
+ }
+ 
+ ulong calc_fbsize(void)
+diff --git a/include/atmel_9x5_lcdc.h b/include/atmel_9x5_lcdc.h
+new file mode 100644
+index 0000000..6bd8cfe
+--- /dev/null
++++ b/include/atmel_9x5_lcdc.h
+@@ -0,0 +1,223 @@
++/*
++ *  Header file for AT91/AT32 SAM9X5 LCD Controller
++ *
++ *  Data structure and register user interface
++ *
++ *  Copyright (C) 2010 Atmel Corporation
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++#ifndef __ATMEL_9X5_LCDC_H__
++#define __ATMEL_9X5_LCDC_H__
++
++/* Atmel 9x5 lcdc hardware registers */
++#define ATMEL_LCDC_LCDCFG0	0x0000
++#define LCDC_LCDCFG0_CLKPOL (0x1 << 0)
++#define LCDC_LCDCFG0_CLKSEL (0x1 << 2)
++#define LCDC_LCDCFG0_CLKPWMSEL (0x1 << 3)
++#define LCDC_LCDCFG0_CGDISBASE (0x1 << 8)
++#define LCDC_LCDCFG0_CGDISOVR1 (0x1 << 9)
++#define LCDC_LCDCFG0_CGDISHEO (0x1 << 11)
++#define LCDC_LCDCFG0_CGDISHCR (0x1 << 12)
++#define LCDC_LCDCFG0_CLKDIV_Pos 16
++#define LCDC_LCDCFG0_CLKDIV_Msk (0xff << LCDC_LCDCFG0_CLKDIV_Pos)
++#define LCDC_LCDCFG0_CLKDIV(value) \
++	((LCDC_LCDCFG0_CLKDIV_Msk & ((value) << LCDC_LCDCFG0_CLKDIV_Pos)))
++
++#define ATMEL_LCDC_LCDCFG1	0x0004
++#define LCDC_LCDCFG1_HSPW_Pos 0
++#define LCDC_LCDCFG1_HSPW_Msk (0x3f << LCDC_LCDCFG1_HSPW_Pos)
++#define LCDC_LCDCFG1_HSPW(value) \
++	((LCDC_LCDCFG1_HSPW_Msk & ((value) << LCDC_LCDCFG1_HSPW_Pos)))
++#define LCDC_LCDCFG1_VSPW_Pos 16
++#define LCDC_LCDCFG1_VSPW_Msk (0x3f << LCDC_LCDCFG1_VSPW_Pos)
++#define LCDC_LCDCFG1_VSPW(value) \
++	((LCDC_LCDCFG1_VSPW_Msk & ((value) << LCDC_LCDCFG1_VSPW_Pos)))
++
++#define ATMEL_LCDC_LCDCFG2	0x0008
++#define LCDC_LCDCFG2_VFPW_Pos 0
++#define LCDC_LCDCFG2_VFPW_Msk (0x3f << LCDC_LCDCFG2_VFPW_Pos)
++#define LCDC_LCDCFG2_VFPW(value) \
++	((LCDC_LCDCFG2_VFPW_Msk & ((value) << LCDC_LCDCFG2_VFPW_Pos)))
++#define LCDC_LCDCFG2_VBPW_Pos 16
++#define LCDC_LCDCFG2_VBPW_Msk (0x3f << LCDC_LCDCFG2_VBPW_Pos)
++#define LCDC_LCDCFG2_VBPW(value) \
++	((LCDC_LCDCFG2_VBPW_Msk & ((value) << LCDC_LCDCFG2_VBPW_Pos)))
++
++#define ATMEL_LCDC_LCDCFG3	0x000C
++#define LCDC_LCDCFG3_HFPW_Pos 0
++#define LCDC_LCDCFG3_HFPW_Msk (0xff << LCDC_LCDCFG3_HFPW_Pos)
++#define LCDC_LCDCFG3_HFPW(value) \
++	((LCDC_LCDCFG3_HFPW_Msk & ((value) << LCDC_LCDCFG3_HFPW_Pos)))
++#define LCDC_LCDCFG3_HBPW_Pos 16
++#define LCDC_LCDCFG3_HBPW_Msk (0xff << LCDC_LCDCFG3_HBPW_Pos)
++#define LCDC_LCDCFG3_HBPW(value) \
++	((LCDC_LCDCFG3_HBPW_Msk & ((value) << LCDC_LCDCFG3_HBPW_Pos)))
++
++#define ATMEL_LCDC_LCDCFG4	0x0010
++#define LCDC_LCDCFG4_PPL_Pos 0
++#define LCDC_LCDCFG4_PPL_Msk (0x7ff << LCDC_LCDCFG4_PPL_Pos)
++#define LCDC_LCDCFG4_PPL(value) \
++	((LCDC_LCDCFG4_PPL_Msk & ((value) << LCDC_LCDCFG4_PPL_Pos)))
++#define LCDC_LCDCFG4_RPF_Pos 16
++#define LCDC_LCDCFG4_RPF_Msk (0x7ff << LCDC_LCDCFG4_RPF_Pos)
++#define LCDC_LCDCFG4_RPF(value) \
++	((LCDC_LCDCFG4_RPF_Msk & ((value) << LCDC_LCDCFG4_RPF_Pos)))
++
++#define ATMEL_LCDC_LCDCFG5	0x0014
++#define LCDC_LCDCFG5_HSPOL (0x1 << 0)
++#define LCDC_LCDCFG5_VSPOL (0x1 << 1)
++#define LCDC_LCDCFG5_VSPDLYS (0x1 << 2)
++#define LCDC_LCDCFG5_VSPDLYE (0x1 << 3)
++#define LCDC_LCDCFG5_DISPPOL (0x1 << 4)
++#define LCDC_LCDCFG5_SERIAL (0x1 << 5)
++#define LCDC_LCDCFG5_DITHER (0x1 << 6)
++#define LCDC_LCDCFG5_DISPDLY (0x1 << 7)
++#define LCDC_LCDCFG5_MODE_Pos 8
++#define LCDC_LCDCFG5_MODE_Msk (0x3 << LCDC_LCDCFG5_MODE_Pos)
++#define   LCDC_LCDCFG5_MODE_OUTPUT_12BPP (0x0 << 8)
++#define   LCDC_LCDCFG5_MODE_OUTPUT_16BPP (0x1 << 8)
++#define   LCDC_LCDCFG5_MODE_OUTPUT_18BPP (0x2 << 8)
++#define   LCDC_LCDCFG5_MODE_OUTPUT_24BPP (0x3 << 8)
++#define LCDC_LCDCFG5_VSPSU (0x1 << 12)
++#define LCDC_LCDCFG5_VSPHO (0x1 << 13)
++#define LCDC_LCDCFG5_GUARDTIME_Pos 16
++#define LCDC_LCDCFG5_GUARDTIME_Msk (0x1f << LCDC_LCDCFG5_GUARDTIME_Pos)
++#define LCDC_LCDCFG5_GUARDTIME(value) \
++	((LCDC_LCDCFG5_GUARDTIME_Msk & ((value) << LCDC_LCDCFG5_GUARDTIME_Pos)))
++
++#define ATMEL_LCDC_LCDCFG6	0x0018
++#define LCDC_LCDCFG6_PWMPS_Pos 0
++#define LCDC_LCDCFG6_PWMPS_Msk (0x7 << LCDC_LCDCFG6_PWMPS_Pos)
++#define LCDC_LCDCFG6_PWMPS(value) \
++	((LCDC_LCDCFG6_PWMPS_Msk & ((value) << LCDC_LCDCFG6_PWMPS_Pos)))
++#define LCDC_LCDCFG6_PWMPOL (0x1 << 4)
++#define LCDC_LCDCFG6_PWMCVAL_Pos 8
++#define LCDC_LCDCFG6_PWMCVAL_Msk (0xff << LCDC_LCDCFG6_PWMCVAL_Pos)
++#define LCDC_LCDCFG6_PWMCVAL(value) \
++	((LCDC_LCDCFG6_PWMCVAL_Msk & ((value) << LCDC_LCDCFG6_PWMCVAL_Pos)))
++
++#define ATMEL_LCDC_LCDEN	0x0020
++#define LCDC_LCDEN_CLKEN (0x1 << 0)
++#define LCDC_LCDEN_SYNCEN (0x1 << 1)
++#define LCDC_LCDEN_DISPEN (0x1 << 2)
++#define LCDC_LCDEN_PWMEN (0x1 << 3)
++
++#define ATMEL_LCDC_LCDDIS	0x0024
++#define LCDC_LCDDIS_CLKDIS (0x1 << 0)
++#define LCDC_LCDDIS_SYNCDIS (0x1 << 1)
++#define LCDC_LCDDIS_DISPDIS (0x1 << 2)
++#define LCDC_LCDDIS_PWMDIS (0x1 << 3)
++#define LCDC_LCDDIS_CLKRST (0x1 << 8)
++#define LCDC_LCDDIS_SYNCRST (0x1 << 9)
++#define LCDC_LCDDIS_DISPRST (0x1 << 10)
++#define LCDC_LCDDIS_PWMRST (0x1 << 11)
++
++#define ATMEL_LCDC_LCDSR	0x0028
++
++#define LCDC_LCDSR_CLKSTS (0x1 << 0)
++#define LCDC_LCDSR_LCDSTS (0x1 << 1)
++#define LCDC_LCDSR_DISPSTS (0x1 << 2)
++#define LCDC_LCDSR_PWMSTS (0x1 << 3)
++#define LCDC_LCDSR_SIPSTS (0x1 << 4)
++
++#define ATMEL_LCDC_LCDIDR	0x0030
++#define LCDC_LCDIDR_SOFID (0x1 << 0)
++#define LCDC_LCDIDR_DISID (0x1 << 1)
++#define LCDC_LCDIDR_DISPID (0x1 << 2)
++#define LCDC_LCDIDR_FIFOERRID (0x1 << 4)
++#define LCDC_LCDIDR_BASEID (0x1 << 8)
++#define LCDC_LCDIDR_OVR1ID (0x1 << 9)
++#define LCDC_LCDIDR_HEOID (0x1 << 11)
++#define LCDC_LCDIDR_HCRID (0x1 << 12)
++
++#define ATMEL_LCDC_BASECHER	0x0040
++#define LCDC_BASECHER_CHEN (0x1 << 0)
++#define LCDC_BASECHER_UPDATEEN (0x1 << 1)
++#define LCDC_BASECHER_A2QEN (0x1 << 2)
++
++#define ATMEL_LCDC_BASEIDR	0x0050
++#define LCDC_BASEIDR_DMA (0x1 << 2)
++#define LCDC_BASEIDR_DSCR (0x1 << 3)
++#define LCDC_BASEIDR_ADD (0x1 << 4)
++#define LCDC_BASEIDR_DONE (0x1 << 5)
++#define LCDC_BASEIDR_OVR (0x1 << 6)
++
++#define ATMEL_LCDC_BASEADDR	0x0060
++
++#define ATMEL_LCDC_BASECTRL	0x0064
++#define LCDC_BASECTRL_DFETCH (0x1 << 0)
++#define LCDC_BASECTRL_LFETCH (0x1 << 1)
++#define LCDC_BASECTRL_DMAIEN (0x1 << 2)
++#define LCDC_BASECTRL_DSCRIEN (0x1 << 3)
++#define LCDC_BASECTRL_ADDIEN (0x1 << 4)
++#define LCDC_BASECTRL_DONEIEN (0x1 << 5)
++
++#define ATMEL_LCDC_BASENEXT	0x0068
++#define ATMEL_LCDC_BASECFG0	0x006C
++#define LCDC_BASECFG0_BLEN_Pos 4
++#define   LCDC_BASECFG0_BLEN_AHB_SINGLE (0x0 << 4)
++#define   LCDC_BASECFG0_BLEN_AHB_INCR4 (0x1 << 4)
++#define   LCDC_BASECFG0_BLEN_AHB_INCR8 (0x2 << 4)
++#define   LCDC_BASECFG0_BLEN_AHB_INCR16 (0x3 << 4)
++#define LCDC_BASECFG0_DLBO (0x1 << 8)
++
++#define ATMEL_LCDC_BASECFG1	0x0070
++#define   LCDC_BASECFG1_RGBMODE_12BPP_RGB_444 (0x0 << 4)
++#define   LCDC_BASECFG1_RGBMODE_16BPP_ARGB_4444 (0x1 << 4)
++#define   LCDC_BASECFG1_RGBMODE_16BPP_RGBA_4444 (0x2 << 4)
++#define   LCDC_BASECFG1_RGBMODE_16BPP_RGB_565 (0x3 << 4)
++#define   LCDC_BASECFG1_RGBMODE_16BPP_TRGB_1555 (0x4 << 4)
++#define   LCDC_BASECFG1_RGBMODE_18BPP_RGB_666 (0x5 << 4)
++#define   LCDC_BASECFG1_RGBMODE_18BPP_RGB_666_PACKED (0x6 << 4)
++#define   LCDC_BASECFG1_RGBMODE_19BPP_TRGB_1666 (0x7 << 4)
++#define   LCDC_BASECFG1_RGBMODE_19BPP_TRGB_PACKED (0x8 << 4)
++#define   LCDC_BASECFG1_RGBMODE_24BPP_RGB_888 (0x9 << 4)
++#define   LCDC_BASECFG1_RGBMODE_24BPP_RGB_888_PACKED (0xA << 4)
++#define   LCDC_BASECFG1_RGBMODE_25BPP_TRGB_1888 (0xB << 4)
++#define   LCDC_BASECFG1_RGBMODE_32BPP_ARGB_8888 (0xC << 4)
++#define   LCDC_BASECFG1_RGBMODE_32BPP_RGBA_8888 (0xD << 4)
++
++#define ATMEL_LCDC_BASECFG2	0x0074
++#define LCDC_BASECFG2_XSTRIDE_Pos 0
++#define LCDC_BASECFG2_XSTRIDE_Msk (0xffffffff << LCDC_BASECFG2_XSTRIDE_Pos)
++#define LCDC_BASECFG2_XSTRIDE(value) \
++	((LCDC_BASECFG2_XSTRIDE_Msk & ((value) << LCDC_BASECFG2_XSTRIDE_Pos)))
++
++#define ATMEL_LCDC_BASECFG3	0x0078
++#define LCDC_BASECFG3_BDEF_Pos 0
++#define LCDC_BASECFG3_BDEF_Msk (0xff << LCDC_BASECFG3_BDEF_Pos)
++#define LCDC_BASECFG3_BDEF(value) \
++	((LCDC_BASECFG3_BDEF_Msk & ((value) << LCDC_BASECFG3_BDEF_Pos)))
++#define LCDC_BASECFG3_GDEF_Pos 8
++#define LCDC_BASECFG3_GDEF_Msk (0xff << LCDC_BASECFG3_GDEF_Pos)
++#define LCDC_BASECFG3_GDEF(value) \
++	((LCDC_BASECFG3_GDEF_Msk & ((value) << LCDC_BASECFG3_GDEF_Pos)))
++#define LCDC_BASECFG3_RDEF_Pos 16
++#define LCDC_BASECFG3_RDEF_Msk (0xff << LCDC_BASECFG3_RDEF_Pos)
++#define LCDC_BASECFG3_RDEF(value) \
++	((LCDC_BASECFG3_RDEF_Msk & ((value) << LCDC_BASECFG3_RDEF_Pos)))
++
++#define ATMEL_LCDC_BASECFG4	0x007C
++#define LCDC_BASECFG4_DMA (0x1 << 8)
++#define LCDC_BASECFG4_REP (0x1 << 9)
++
++typedef struct {
++	u32	address;
++	u32	control;
++	u32	next;
++} lcd_dma_desc;
++
++#endif /* __ATMEL_9X5_LCDC_H__ */
+diff --git a/include/configs/at91sam9m10g45ek.h b/include/configs/at91sam9m10g45ek.h
+index 44c5496..456564b 100644
+--- a/include/configs/at91sam9m10g45ek.h
++++ b/include/configs/at91sam9m10g45ek.h
+@@ -116,6 +116,8 @@
+ #define CONFIG_SPI_FLASH		1
+ #define CONFIG_SPI_FLASH_ATMEL		1
+ #define CONFIG_SYS_MAX_DATAFLASH_BANKS	1
++#define CONFIG_SYS_USE_DATAFLASH	1
++#define CONFIG_ENV_SPI_MODE		SPI_MODE_0
+ #endif
+ 
+ /* NOR flash, if populated */
+@@ -176,8 +178,10 @@
+ #define CONFIG_ENV_OFFSET		0x4200
+ #define CONFIG_ENV_ADDR		(0xC0000000 + CONFIG_ENV_OFFSET)
+ #define CONFIG_ENV_SIZE		0x4200
+-#define CONFIG_ENV_SECT_SIZE		0x10000
+-#define CONFIG_BOOTCOMMAND	"cp.b 0xC0042000 0x22000000 0x210000; bootm"
++#define CONFIG_ENV_SECT_SIZE		0x2100
++#define CONFIG_BOOTCOMMAND	"sf probe 0; " \
++				"sf read 0x72200000 0x42000 0x200000; " \
++				"bootm 0x72200000"
+ #define CONFIG_BOOTARGS		"console=ttyS0,115200 " \
+ 				"root=/dev/mtdblock0 " \
+ 				"mtdparts=atmel_nand:-(root) "\
+diff --git a/include/configs/at91sam9x5ek.h b/include/configs/at91sam9x5ek.h
+new file mode 100644
+index 0000000..a123ece
+--- /dev/null
++++ b/include/configs/at91sam9x5ek.h
+@@ -0,0 +1,236 @@
++/*
++ * (C) Copyright 2007-2008
++ * Stelian Pop <stelian.pop@leadtechdesign.com>
++ * Lead Tech Design <www.leadtechdesign.com>
++ *
++ * Configuation settings for the AT91SAM9X5EK board.
++ *
++ * See file CREDITS for list of people who contributed to this
++ * project.
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of
++ * the License, or (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston,
++ * MA 02111-1307 USA
++ */
++
++#ifndef __CONFIG_H
++#define __CONFIG_H
++
++#define CONFIG_AT91_LEGACY
++
++/* ARM asynchronous clock */
++#define CONFIG_SYS_AT91_MAIN_CLOCK	12000000	/* 12 MHz crystal */
++#define CONFIG_SYS_HZ		1000
++
++#define CONFIG_ARM926EJS	1	/* This is an ARM926EJS Core	*/
++#define CONFIG_AT91SAM9X5	1
++
++#define CONFIG_ARCH_CPU_INIT
++#undef CONFIG_USE_IRQ			/* we don't need IRQ/FIQ stuff	*/
++
++#define CONFIG_CMDLINE_TAG	1	/* enable passing of ATAGs	*/
++#define CONFIG_SETUP_MEMORY_TAGS 1
++#define CONFIG_INITRD_TAG	1
++
++#define CONFIG_LOAD_ONE_WIRE_INFO	1
++#ifdef CONFIG_LOAD_ONE_WIRE_INFO
++#define CONFIG_REVISION_TAG	1       /* get the one-wire board information */
++#define CONFIG_SERIAL_TAG	1
++#endif
++
++#define CONFIG_SKIP_LOWLEVEL_INIT
++#define CONFIG_SKIP_RELOCATE_UBOOT
++
++/*
++ * Hardware drivers
++ */
++#define CONFIG_AT91_GPIO	1
++
++/* DBGU */
++#define CONFIG_ATMEL_USART	1
++#define CONFIG_USART3		1	/* USART 3 is DBGU */
++#define USART_BASE	USART3_BASE
++#define AT91C_PIO_PA9         (1 << 9)	/* Pin Controlled by PA9 */
++#define AT91C_PA9_DRXD        (AT91C_PIO_PA9)
++#define AT91C_PIO_PA10        (1 << 10)	/* Pin Controlled by PA10 */
++#define AT91C_PA10_DTXD       (AT91C_PIO_PA10)
++
++/* LCD */
++//#define CONFIG_LCD			1
++#undef CONFIG_LCD
++#define LCD_BPP				LCD_COLOR16
++#define LCD_OUTPUT_BPP			24
++#define CONFIG_LCD_LOGO			1
++#undef LCD_TEST_PATTERN
++#define CONFIG_LCD_INFO			1
++#define CONFIG_LCD_INFO_BELOW_LOGO	1
++#define CONFIG_SYS_WHITE_ON_BLACK	1
++#define CONFIG_ATMEL_LCD		1
++#define CONFIG_ATMEL_LCD_RGB565		1
++#define CONFIG_SYS_CONSOLE_IS_IN_ENV	1
++/* board specific(not enough SRAM) */
++#define CONFIG_AT91SAM9X5_LCD_BASE	0x26D00000
++
++/* LED */
++#define CONFIG_AT91_LED
++#define	CONFIG_RED_LED		AT91_PIN_PD31	/* this is the user1 led */
++#define	CONFIG_GREEN_LED	AT91_PIN_PD0	/* this is the user2 led */
++
++#define CONFIG_BOOTDELAY	1
++
++/*
++ * BOOTP options
++ */
++#define CONFIG_BOOTP_BOOTFILESIZE	1
++#define CONFIG_BOOTP_BOOTPATH		1
++#define CONFIG_BOOTP_GATEWAY		1
++#define CONFIG_BOOTP_HOSTNAME		1
++
++/*
++ * Command line configuration.
++ */
++#include <config_cmd_default.h>
++#undef CONFIG_CMD_BDI
++#undef CONFIG_CMD_FPGA
++#undef CONFIG_CMD_IMI
++#undef CONFIG_CMD_IMLS
++#undef CONFIG_CMD_AUTOSCRIPT
++#undef CONFIG_CMD_LOADS
++
++#define CONFIG_CMD_PING		1
++#define CONFIG_CMD_DHCP		1
++#define CONFIG_CMD_NAND		1
++#undef CONFIG_CMD_USB
++
++/* SDRAM */
++#define CONFIG_NR_DRAM_BANKS		1
++#define PHYS_SDRAM			0x20000000
++#define PHYS_SDRAM_SIZE			0x08000000	/* 128 megs */
++
++/* DataFlash */
++#ifdef CONFIG_ATMEL_SPI
++#define CONFIG_CMD_SF
++#define CONFIG_CMD_SPI
++#define CONFIG_SPI_FLASH		1
++#define CONFIG_SPI_FLASH_ATMEL		1
++#define CONFIG_SYS_MAX_DATAFLASH_BANKS	1
++#define CONFIG_SYS_USE_DATAFLASH	1
++#endif
++
++/* no NOR flash */
++#undef CONFIG_SYS_USE_NORFLASH
++#define CONFIG_SYS_NO_FLASH	1
++
++/* NAND flash */
++#ifdef CONFIG_CMD_NAND
++#define CONFIG_NAND_MAX_CHIPS		1
++#define CONFIG_NAND_ATMEL
++#define CONFIG_SYS_MAX_NAND_DEVICE	1
++#define CONFIG_SYS_NAND_BASE		0x40000000
++#define CONFIG_SYS_NAND_DBW_8		1
++/* our ALE is AD21 */
++#define CONFIG_SYS_NAND_MASK_ALE	(1 << 21)
++/* our CLE is AD22 */
++#define CONFIG_SYS_NAND_MASK_CLE	(1 << 22)
++#define CONFIG_SYS_NAND_ENABLE_PIN	AT91_PIN_PD4
++#define CONFIG_SYS_NAND_READY_PIN	AT91_PIN_PD6
++#define CONFIG_SYS_NAND_ALT_READY_PIN	AT91_PIN_PD5
++
++/* PMECC & PMERRLOC */
++#define CONFIG_SYS_NAND_PMECC_BASE	AT91_PMECC
++#define CONFIG_SYS_NAND_PMERRLOC_BASE	AT91_PMERRLOC
++#define CONFIG_ATMEL_NAND_HWECC		1
++#define CONFIG_ATMEL_NAND_HW_PMECC	1
++
++#define CONFIG_MTD_DEVICE		1
++#define CONFIG_CMD_MTDPARTS		1
++#define CONFIG_MTD_PARTITIONS		1
++#define CONFIG_RBTREE			1
++#define CONFIG_LZO			1
++#define CONFIG_CMD_UBI			1
++#define CONFIG_CMD_UBIFS		1
++#endif
++
++/* Ethernet */
++#define CONFIG_MACB			1
++#define CONFIG_RMII			1
++#define CONFIG_NET_MULTI		1
++#define CONFIG_NET_RETRY_COUNT		20
++#define CONFIG_RESET_PHY_R		1
++
++/* USB */
++#undef CONFIG_USB_STORAGE
++
++#define CONFIG_SYS_LOAD_ADDR		0x22000000	/* load address */
++
++#define CONFIG_SYS_MEMTEST_START	PHYS_SDRAM
++#define CONFIG_SYS_MEMTEST_END		0x26e00000
++
++#ifdef CONFIG_SYS_USE_DATAFLASH
++
++/* bootstrap + u-boot + env + linux in dataflash on CS0 */
++#define CONFIG_ENV_IS_IN_SPI_FLASH	1
++#define CONFIG_SYS_MONITOR_BASE	(0x10000000 + 0x8400)
++#define CONFIG_ENV_OFFSET	0x5000
++#define CONFIG_ENV_ADDR		(0x10000000 + CONFIG_ENV_OFFSET)
++#define CONFIG_ENV_SIZE		0x3000
++#define CONFIG_ENV_SECT_SIZE	0x1000
++#define CONFIG_BOOTCOMMAND	"sf probe 0; " \
++				"sf read 0x22000000 0x42000 0x250000; " \
++				"bootm 0x22000000"
++#else /* CONFIG_SYS_USE_NANDFLASH */
++
++/* bootstrap + u-boot + env + linux in nandflash */
++#define CONFIG_ENV_IS_IN_NAND	1
++#define CONFIG_ENV_OFFSET		0x0c0000
++#define CONFIG_ENV_OFFSET_REDUND	0x160000
++#define CONFIG_ENV_SIZE		0x20000		/* 1 sector = 128 kB */
++#define CONFIG_BOOTCOMMAND	"nand read.jffs2 " \
++				"0x22000000 0x200000 0x250000; " \
++				"bootm 0x22000000"
++#endif
++
++#define CONFIG_BOOTARGS		"mem=128M console=ttyS0,115200 " \
++				"mtdparts=atmel_nand:" \
++				"8M(bootstrap/uboot/kernel)ro,-(rootfs) " \
++				"root=/dev/mtdblock1 rw " \
++				"rootfstype=ubifs ubi.mtd=1 root=ubi0:rootfs"
++
++#define CONFIG_BAUDRATE		115200
++#define CONFIG_SYS_BAUDRATE_TABLE	{115200 , 19200, 38400, 57600, 9600 }
++
++#define CONFIG_SYS_PROMPT	"U-Boot> "
++#define CONFIG_SYS_CBSIZE	256
++#define CONFIG_SYS_MAXARGS	16
++#define CONFIG_SYS_PBSIZE	(CONFIG_SYS_CBSIZE + sizeof(CONFIG_SYS_PROMPT) \
++					+ 16)
++#define CONFIG_SYS_LONGHELP	1
++#define CONFIG_CMDLINE_EDITING	1
++#define CONFIG_AUTO_COMPLETE
++#define CONFIG_SYS_HUSH_PARSER
++#define CONFIG_SYS_PROMPT_HUSH_PS2	"> "
++
++/*
++ * Size of malloc() pool
++ */
++#define CONFIG_SYS_MALLOC_LEN	ROUND(3 * CONFIG_ENV_SIZE + 128*1024, 0x1000)
++#define CONFIG_SYS_GBL_DATA_SIZE	128	/* 128 bytes for initial data */
++
++#define CONFIG_STACKSIZE	(32*1024)	/* regular stack */
++
++#ifdef CONFIG_USE_IRQ
++#error CONFIG_USE_IRQ not supported
++#endif
++
++#endif
+diff --git a/include/nand.h b/include/nand.h
+index 2a81597..6e99982 100644
+--- a/include/nand.h
++++ b/include/nand.h
+@@ -111,8 +111,10 @@ typedef struct nand_erase_options nand_erase_options_t;
+ 
+ int nand_read_skip_bad(nand_info_t *nand, loff_t offset, size_t *length,
+ 		       u_char *buffer);
++
++#define WITH_DROP_FFS (1 << 1) /* drop trailing all-0xff pages */
+ int nand_write_skip_bad(nand_info_t *nand, loff_t offset, size_t *length,
+-			u_char *buffer);
++			u_char *buffer, int flags);
+ int nand_erase_opts(nand_info_t *meminfo, const nand_erase_options_t *opts);
+ 
+ #define NAND_LOCK_STATUS_TIGHT	0x01
