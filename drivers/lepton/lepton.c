@@ -37,8 +37,28 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/spi/spi.h>
+#include <linux/string.h>
+#include <linux/mutex.h>
+#include <linux/semaphore.h>
+#include <linux/cdev.h>
+ #include <asm/uaccess.h>
 
 #include "lepton.h"
+
+const char this_driver_name[]="lepton";
+
+struct lepton_dev {
+	struct semaphore spi_sem;
+	struct semaphore fop_sem;
+	dev_t devt;
+	struct cdev cdev;
+	struct class *class;
+	struct spi_device *spi_device;
+	char *user_buff;
+};
+
+
+static struct lepton_dev lepton_dev;
 
 static int lepton_transfer(struct spi_device *spi)
 {
@@ -98,6 +118,14 @@ static int __devinit lepton_probe(struct spi_device *spi)
 			4);
 //	dev_notice(&spi->dev, "probe() called, value: %d\n",
 //			pdata ? pdata->value : -1);
+	if (down_interruptible(&lepton_dev.spi_sem))
+		return -EBUSY;
+
+	lepton_dev.spi_device = spi;
+
+	up(&lepton_dev.spi_sem);
+
+
 
 	/* Try communicating with the device. */
 	ret = lepton_transfer(spi);
