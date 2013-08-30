@@ -58,20 +58,22 @@ static void __init ek_map_io(void)
 }
 
 static struct spi_board_info sam9x5_spi_devices[] = {
-    {
-        .modalias    = "lepton",
-        .chip_select    = 0,
-        .max_speed_hz    = 20 * 1000 * 1000,
-        .bus_num    = 0,
-	.mode = SPI_MODE_3,
-    }, 
-    {
-        .modalias    = "lepton",
-        .chip_select    = 1,
-        .max_speed_hz    = 20 * 1000 * 1000,
-        .bus_num    = 1,
-	.mode = SPI_MODE_3,
-    },
+	
+//This bus is not needed for now.
+	// {
+	// 	.modalias    = "lepton",
+	// 	.chip_select    = 0,
+	// 	.max_speed_hz    = 20 * 1000 * 1000,
+	// 	.bus_num    = 0,
+	// 	.mode = SPI_MODE_3,
+	// }, 
+	{
+		.modalias    = "lepton",
+		.chip_select    = 1,
+		.max_speed_hz    = 20 * 1000 * 1000,
+		.bus_num    = 1,
+		.mode = SPI_MODE_3,
+	},
 };
 
 /*

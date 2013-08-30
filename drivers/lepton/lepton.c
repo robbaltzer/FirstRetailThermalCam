@@ -41,9 +41,16 @@
 #include <linux/mutex.h>
 #include <linux/semaphore.h>
 #include <linux/cdev.h>
+#include <linux/fs.h>
  #include <asm/uaccess.h>
 
 #include "lepton.h"
+
+#define USER_BUFF_SIZE 128
+
+#define SPI_BUS 1
+#define SPI_BUS_CS1 1
+#define SPI_BUS_SPEED 1000000
 
 const char this_driver_name[]="lepton";
 
@@ -106,6 +113,68 @@ static int lepton_transfer(struct spi_device *spi)
 	return ret;
 }
 
+static ssize_t lepton_read(struct file *filp, char __user *buff, size_t count,
+	loff_t *offp)
+{
+	size_t len;
+	ssize_t status = 0;
+
+	if (!buff)
+		return -EFAULT;
+
+	if (*offp > 0)
+		return 0;
+
+	if (down_interruptible(&lepton_dev.fop_sem))
+		return -ERESTARTSYS;
+
+	if (!lepton_dev.spi_device)
+		strcpy(lepton_dev.user_buff, "spi_device is NULL\n");
+	else if (!lepton_dev.spi_device->master)
+		strcpy(lepton_dev.user_buff, "spi_device->master is NULL\n");
+	else
+		sprintf(lepton_dev.user_buff, "%s ready on SPI%d.%d\n",
+			this_driver_name,
+			lepton_dev.spi_device->master->bus_num,
+			lepton_dev.spi_device->chip_select);
+
+
+	len = strlen(lepton_dev.user_buff);
+
+	if (len < count)
+		count = len;
+
+	if (copy_to_user(buff, lepton_dev.user_buff, count)) {
+		printk(KERN_ALERT "lepton_read(): copy_to_user() failed\n");
+		status = -EFAULT;
+	} else {
+		*offp += count;
+		status = count;
+	}
+
+	up(&lepton_dev.fop_sem);
+
+	return status;	
+}
+
+static int lepton_open(struct inode *inode, struct file *filp)
+{	
+	int status = 0;
+
+	if (down_interruptible(&lepton_dev.fop_sem))
+		return -ERESTARTSYS;
+
+	if (!lepton_dev.user_buff) {
+		lepton_dev.user_buff = kmalloc(USER_BUFF_SIZE, GFP_KERNEL);
+		if (!lepton_dev.user_buff)
+			status = -ENOMEM;
+	}	
+
+	up(&lepton_dev.fop_sem);
+
+	return status;
+}
+
 static int __devinit lepton_probe(struct spi_device *spi)
 {
 //	struct lepton_data *pdata = spi->dev.platform_data;
@@ -114,33 +183,37 @@ static int __devinit lepton_probe(struct spi_device *spi)
 	/* Add per-device initialization code here */
 	printk(KERN_ALERT "lepton_probe\n");
 
-	dev_notice(&spi->dev, "probe() called, value: %d\n",
-			4);
-//	dev_notice(&spi->dev, "probe() called, value: %d\n",
-//			pdata ? pdata->value : -1);
+	dev_notice(&spi->dev, "probe() called, value: %d\n", 4);
+
 	if (down_interruptible(&lepton_dev.spi_sem))
 		return -EBUSY;
 
+	printk(KERN_ALERT "lepton_probe1\n");
 	lepton_dev.spi_device = spi;
-
+	printk(KERN_ALERT "lepton_probe2\n");
 	up(&lepton_dev.spi_sem);
-
-
-
+	printk(KERN_ALERT "lepton_probe3\n");
 	/* Try communicating with the device. */
 	ret = lepton_transfer(spi);
-
+	printk(KERN_ALERT "lepton_probe4\n");
 	return ret;
 }
 
-static int __devexit lepton_remove(struct spi_device *spi)
-{
-	/* Add per-device cleanup code here */
-	printk(KERN_ALERT "lepton_remove\n");
-	dev_notice(&spi->dev, "remove() called\n");
+// static int __devexit lepton_remove(struct spi_device *spi)
+// {
+// 	/* Add per-device cleanup code here */
+// 	printk(KERN_ALERT "lepton_remove\n");
+// 	dev_notice(&spi->dev, "remove() called\n");
 
-	return 0;
-}
+// 	if (down_interruptible(&lepton_dev.spi_sem))
+// 		return -EBUSY;
+
+// 	lepton_dev.spi_device = NULL;
+
+// 	up(&lepton_dev.spi_sem);
+
+// 	return 0;
+// }
 
 #ifdef CONFIG_PM
 static int lepton_suspend(struct spi_device *spi, pm_message_t state)
@@ -166,9 +239,90 @@ static int lepton_resume(struct spi_device *spi)
 #define lepton_resume	NULL
 #endif
 
+static int lepton_remove(struct spi_device *spi_device)
+{
+	if (down_interruptible(&lepton_dev.spi_sem))
+		return -EBUSY;
+
+	lepton_dev.spi_device = NULL;
+
+	up(&lepton_dev.spi_sem);
+
+	return 0;
+}
+
+static int __init add_lepton_device_to_bus(void)
+{
+	struct spi_master *spi_master;
+	struct spi_device *spi_device;
+	struct device *pdev;
+	char buff[64];
+	int status = 0;
+
+	spi_master = spi_busnum_to_master(SPI_BUS);
+	if (!spi_master) {
+		printk(KERN_ALERT "spi_busnum_to_master(%d) returned NULL\n",
+			SPI_BUS);
+		printk(KERN_ALERT "Missing modprobe omap2_mcspi?\n");
+		return -1;
+	}
+
+	spi_device = spi_alloc_device(spi_master);
+	if (!spi_device) {
+		put_device(&spi_master->dev);
+		printk(KERN_ALERT "spi_alloc_device() failed\n");
+		return -1;
+	}
+
+	spi_device->chip_select = SPI_BUS_CS1;
+
+/* Check whether this SPI bus.cs is already claimed */
+	snprintf(buff, sizeof(buff), "%s.%u",
+		dev_name(&spi_device->master->dev),
+		spi_device->chip_select);
+
+	pdev = bus_find_device_by_name(spi_device->dev.bus, NULL, buff);
+	if (pdev) {
+/* We are not going to use this spi_device, so free it */
+		spi_dev_put(spi_device);
+
+/*
+* There is already a device configured for this bus.cs
+* It is okay if it us, otherwise complain and fail.
+*/
+	if (pdev->driver && pdev->driver->name &&
+		strcmp(this_driver_name, pdev->driver->name)) {
+		printk(KERN_ALERT
+			"Driver [%s] already registered for %s\n",
+			pdev->driver->name, buff);
+		status = -1;
+	}
+	} else {
+	spi_device->max_speed_hz = SPI_BUS_SPEED;
+	spi_device->mode = SPI_MODE_0;
+	spi_device->bits_per_word = 8;
+	spi_device->irq = -1;
+	spi_device->controller_state = NULL;
+	spi_device->controller_data = NULL;
+	strlcpy(spi_device->modalias, this_driver_name, SPI_NAME_SIZE);
+
+	status = spi_add_device(spi_device);	
+	if (status < 0) {	
+		spi_dev_put(spi_device);
+		printk(KERN_ALERT "spi_add_device() failed: %d\n",
+			status);	
+	}	
+}
+
+put_device(&spi_master->dev);
+
+return status;
+}
+
+
 static struct spi_driver lepton_driver = {
 	.driver	= {
-		.name		= "lepton",
+		.name		= this_driver_name,
 		.owner		= THIS_MODULE,
 	},
 	.probe		= lepton_probe,
@@ -177,19 +331,148 @@ static struct spi_driver lepton_driver = {
 	.resume		= lepton_resume,
 };
 
+static int __init lepton_init_spi(void)
+{
+	int error;
+
+	error = spi_register_driver(&lepton_driver);
+	if (error < 0) {
+		printk(KERN_ALERT "spi_register_driver() failed %d\n", error);
+		return error;
+	}
+
+	error = add_lepton_device_to_bus();
+	if (error < 0) {
+		printk(KERN_ALERT "add_lepton_to_bus() failed\n");
+		spi_unregister_driver(&lepton_driver);
+		return error;
+	}
+
+	return 0;
+}
+
+static const struct file_operations lepton_fops = {
+	.owner =	THIS_MODULE,
+	.read = lepton_read,
+	.open =	lepton_open,	
+};
+
+static int __init lepton_init_cdev(void)
+{
+	int error;
+
+	lepton_dev.devt = MKDEV(0, 0);
+	printk(KERN_ALERT "lepton_init_cdev()\n");
+	error = alloc_chrdev_region(&lepton_dev.devt, 0, 1, this_driver_name);
+	if (error < 0) {
+		printk(KERN_ALERT "alloc_chrdev_region() failed: %d \n",
+			error);
+		return -1;
+	}
+
+	cdev_init(&lepton_dev.cdev, &lepton_fops);
+	lepton_dev.cdev.owner = THIS_MODULE;
+
+	error = cdev_add(&lepton_dev.cdev, lepton_dev.devt, 1);
+	if (error) {
+		printk(KERN_ALERT "cdev_add() failed: %d\n", error);
+		unregister_chrdev_region(lepton_dev.devt, 1);
+		return -1;
+	}	
+	else {
+		printk(KERN_ALERT "cdev_add() succeeded: %d\n", error);
+	}
+
+	return 0;
+}
+
+static int __init lepton_init_class(void)
+{
+	lepton_dev.class = class_create(THIS_MODULE, this_driver_name);
+
+	if (!lepton_dev.class) {
+		printk(KERN_ALERT "class_create() failed\n");
+		return -1;
+	}
+
+	if (!device_create(lepton_dev.class, NULL, lepton_dev.devt, NULL,
+		this_driver_name)) {
+		printk(KERN_ALERT "device_create(..., %s) failed\n",
+			this_driver_name);
+	class_destroy(lepton_dev.class);
+	return -1;
+}
+
+return 0;
+}
+
 static int __init lepton_init(void)
 {
+
 	printk(KERN_ALERT "lepton_init\n");
-	return spi_register_driver(&lepton_driver);
+
+	memset(&lepton_dev, 0, sizeof(lepton_dev));
+
+	sema_init(&lepton_dev.spi_sem, 1);
+	sema_init(&lepton_dev.fop_sem, 1);
+
+	if (lepton_init_cdev() < 0)
+		goto fail_1;
+
+	if (lepton_init_class() < 0)
+		goto fail_2;
+
+	if (lepton_init_spi() < 0)
+		goto fail_3;
+
+	return 0;
+
+fail_3:
+	device_destroy(lepton_dev.class, lepton_dev.devt);
+	class_destroy(lepton_dev.class);
+
+fail_2:
+	cdev_del(&lepton_dev.cdev);
+	unregister_chrdev_region(lepton_dev.devt, 1);
+
+fail_1:
+	return -1;
+
+
+/*
+	printk(KERN_ALERT "lepton_init\n");
+
+	memset(&lepton_dev, 0, sizeof(lepton_dev));
+
+	sema_init(&lepton_dev.spi_sem, 1);
+	sema_init(&lepton_dev.fop_sem, 1);
+
+	lepton_init_cdev();
+	return spi_register_driver(&lepton_driver); */
 }
+
 module_init(lepton_init);
 
 static void __exit lepton_exit(void)
 {
+	spi_unregister_device(lepton_dev.spi_device);
+	spi_unregister_driver(&lepton_driver);
+
+	device_destroy(lepton_dev.class, lepton_dev.devt);
+	class_destroy(lepton_dev.class);
+
+	cdev_del(&lepton_dev.cdev);
+	unregister_chrdev_region(lepton_dev.devt, 1);
+
+	if (lepton_dev.user_buff)
+		kfree(lepton_dev.user_buff);
+
+
 	printk(KERN_ALERT "lepton_exit\n");
 	
-	spi_unregister_driver(&lepton_driver);
+	// spi_unregister_driver(&lepton_driver);
 }
+
 module_exit(lepton_exit);
 
 /* Information about this module */
