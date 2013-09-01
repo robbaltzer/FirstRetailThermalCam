@@ -39,4 +39,7 @@ struct leptpn_data {
 	int value;
 };
 
+
+#define LEPTON_IOCTL_TRANSFER	(999001)
+
 #endif /* __LEPTON_H */
