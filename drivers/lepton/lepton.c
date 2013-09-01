@@ -32,6 +32,25 @@
  * USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
  */
+
+
+
+
+
+ #include <linux/moduleparam.h>
+ 
+
+ #include <linux/slab.h>         /* kmalloc() */
+
+ //24 #include <linux/errno.h>        /* error codes */
+ #include <linux/types.h>        /* size_t */
+ #include <linux/proc_fs.h>
+ #include <linux/fcntl.h>        /* O_ACCMODE */
+
+
+ #include <asm/system.h>         /* cli(), *_flags */
+
+
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -95,18 +114,22 @@ static int lepton_transfer(struct spi_device *spi)
 	xfer.rx_buf = buf+164;
 	xfer.len = 164;
 
+
 	/* Add our only transfer to the message */
 	spi_message_add_tail(&xfer, &msg);
 
-	dev_info(&spi->dev, "sending %02x %02x %02x %02x...\n",
-			buf[0], buf[1], buf[2], buf[3]);
+
+
+	// dev_info(&spi->dev, "sending %02x %02x %02x %02x...\n",
+	// 	buf[0], buf[1], buf[2], buf[3]);
 
 	/* Send the message and wait for completion */
 	ret = spi_sync(spi, &msg);
-	if (ret == 0)
-		dev_info(&spi->dev, "received %02x %02x %02x %02x\n",
-				buf[164], buf[165], buf[166], buf[167]);
-
+	if (ret == 0) {
+		if (buf[167] == 0xfe)
+		dev_info(&spi->dev, "received %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+			buf[164], buf[165], buf[166], buf[167], buf[168], buf[169], buf[170], buf[171], buf[172], buf[173], buf[174], buf[175]);
+	}
 	/* Clean up and pass the spi_sync() return value on to the caller */
 	kfree(buf);
 
@@ -179,6 +202,7 @@ static int __devinit lepton_probe(struct spi_device *spi)
 {
 //	struct lepton_data *pdata = spi->dev.platform_data;
 	int ret;
+	// int j;
 
 	/* Add per-device initialization code here */
 	printk(KERN_ALERT "lepton_probe\n");
@@ -192,7 +216,10 @@ static int __devinit lepton_probe(struct spi_device *spi)
 
 	up(&lepton_dev.spi_sem);
 	/* Try communicating with the device. */
-	ret = lepton_transfer(spi);
+//	while(1) {
+		ret = lepton_transfer(spi);
+		// j = 0xffff; while(j--);
+//	}
 	return ret;
 }
 
@@ -349,10 +376,26 @@ static int __init lepton_init_spi(void)
 	return 0;
 }
 
+long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd, 
+                            unsigned long arg)
+{
+
+	return 0;
+}
+
+// static int lepton_ioctl(struct inode *inode, struct file *filp,
+//                  unsigned int cmd, unsigned long arg)
+// {
+
+// 	return 0;
+// }
+
+
 static const struct file_operations lepton_fops = {
 	.owner =	THIS_MODULE,
 	.read = lepton_read,
 	.open =	lepton_open,	
+	.unlocked_ioctl = lepton_unlocked_ioctl,
 };
 
 static int __init lepton_init_cdev(void)
@@ -458,6 +501,11 @@ static void __exit lepton_exit(void)
 	
 
 }
+
+
+
+
+
 
 module_exit(lepton_exit);
 
