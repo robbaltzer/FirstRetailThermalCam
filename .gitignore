@@ -1,0 +1,13 @@
+/Debug
+*.ko
+*.DS_Store
+*._.DS_Store
+*.o
+*.cmd
+*.symvers
+.cproject
+.project
+.tmp_versions
+Release
+*.mod.c
+*.order
