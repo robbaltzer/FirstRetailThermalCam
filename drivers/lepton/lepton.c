@@ -272,7 +272,7 @@ static int __init lepton_init_spi(void)
 long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd, 
                             unsigned long arg)
 {
-		
+	printk(KERN_ALERT "lepton_unlocked_ioctl\n");
 	switch(cmd) {
 		case LEPTON_IOCTL_TRANSFER:
 			lepton_transfer(lepton_dev.spi_device);
