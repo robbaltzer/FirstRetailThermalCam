@@ -34,12 +34,31 @@
  */
 #ifndef __LEPTON_H
 #define __LEPTON_H
+#include <linux/ioctl.h>
+#include "stdbool.h"
+
+typedef struct {
+	int num_transfers;
+	int transfer_size;
+	bool loopback_mode;
+} lepton_iotcl_t;
+
+#define QUERY_GET_VARIABLES _IOR('q', 1, lepton_iotcl_t *)
+#define QUERY_CLR_VARIABLES _IO('q', 2)
+#define QUERY_SET_VARIABLES _IOW('q', 3, lepton_iotcl_t *)
 
 struct leptpn_data {
 	int value;
 };
 
 
+
+
+
 #define LEPTON_IOCTL_TRANSFER	(999001)
+
+
+
+
 
 #endif /* __LEPTON_H */

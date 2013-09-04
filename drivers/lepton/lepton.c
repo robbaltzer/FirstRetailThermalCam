@@ -272,15 +272,59 @@ static int __init lepton_init_spi(void)
 long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd, 
                             unsigned long arg)
 {
-	printk(KERN_ALERT "lepton_unlocked_ioctl\n");
-	switch(cmd) {
+    lepton_iotcl_t q;
+
+	printk(KERN_ALERT "lepton_unlocked_ioctl\n"); 
+				lepton_transfer(lepton_dev.spi_device);
+    switch (cmd)
+    {
+        case QUERY_GET_VARIABLES:
+            // q.status = status;
+            // q.dignity = dignity;
+            // q.ego = ego;
+            if (copy_to_user((lepton_iotcl_t *)arg, &q, sizeof(lepton_iotcl_t)))
+            {
+                return -EACCES;
+            }
+            break;
+        case QUERY_CLR_VARIABLES:
+            // status = 0;
+            // dignity = 0;
+            // ego = 0;
+            break;
+        case QUERY_SET_VARIABLES:
+            if (copy_from_user(&q, (lepton_iotcl_t *)arg, sizeof(lepton_iotcl_t)))
+            {
+                return -EACCES;
+            }
+            // status = q.status;
+            // dignity = q.dignity;
+            // ego = q.ego;
+            break;
 		case LEPTON_IOCTL_TRANSFER:
 			lepton_transfer(lepton_dev.spi_device);
 			break;
-		default:
-		printk(KERN_ALERT "Bad ioctl called %d\n", cmd);
-	}
-	return 0;
+        default:
+            return -EINVAL;
+    }
+ 
+    return 0;
+
+
+
+
+
+
+
+
+	// switch(cmd) {
+	// 	case LEPTON_IOCTL_TRANSFER:
+	// 		lepton_transfer(lepton_dev.spi_device);
+	// 		break;
+	// 	default:
+	// 	printk(KERN_ALERT "Bad ioctl called %d\n", cmd);
+	// }
+	// return 0;
 }
 
 static const struct file_operations lepton_fops = {
