@@ -48,3 +48,21 @@ Build the Linux kernel image:
 
 make ARCH=arm  CROSS_COMPILE=<path_to_cross-compiler/cross-compiler-prefix->
 
+To produce a kernel image suitable for U-Boot:
+mkimage -A arm -O linux -C none -T kernel -a 20008000 -e 20008000 -n linux-2.6 -d arch/arm/boot/zImage uImage-2.6.39-at91sam9x5ek.bin
+
+
+TO FLASH USING SAM-BA and SAM-ICE:
+
+The procedure to flash the kernel image is the same as U-Boot, only two steps change:
+1. Choose the NandFlash media tab in the SAM-BA GUI.
+2. Initialize the media choosing the Enable NandFlash action in the Scripts rolling menu and press Execute.
+3. Select Enable OS PMECC parameters in the Scripts rolling menu and press Execute. The default ECC configuration should be ok in the pop-up dialog box so just press the OK button.
+4. To erase only the U-Boot part into the NAND FLASH, type this command after the SAM-BA prompt:
+NANDFLASH::EraseBlocks 0x200000 0x7FFFFF
+The SAM-BA EraseBlocks command takes two parameter: a start and an end address of FLASH that you want to erase.
+5. Press Send File Name Browse button and choose your kernel image.
+6. Enter the proper address on media in the Address text field. You can find the product map in GettingStarted_9x5. So in our case, the value for the kernel image is 0x200000.
+7. Press Send File button.
+8. Close SAM-BA, remove the USB cable.
+
