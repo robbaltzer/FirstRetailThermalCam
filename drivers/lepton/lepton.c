@@ -110,9 +110,9 @@ static int lepton_transfer(struct spi_device *spi, int size)
 	/* Send the message and wait for completion */
 	ret = spi_sync(spi, &msg);
 	if (ret == 0) {
-			 printk(KERN_ALERT "received %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x \n",
-					buf[size], buf[size+1], buf[size+2], buf[size+3], buf[size+4], buf[size+size-5], buf[size+size-4], buf[size+size-3], 
-					buf[size+size-2], buf[size+size-1]);
+			 // printk(KERN_ALERT "received %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x \n",
+				// 	buf[size], buf[size+1], buf[size+2], buf[size+3], buf[size+4], buf[size+size-5], buf[size+size-4], buf[size+size-3], 
+				// 	buf[size+size-2], buf[size+size-1]);
 	}
 	else
 		printk(KERN_ALERT "spi_sync() failed %d\n", ret);
@@ -189,7 +189,7 @@ static int __devinit lepton_probe(struct spi_device *spi)
 {
 //	struct lepton_data *pdata = spi->dev.platform_data;
 	int ret = 0;
-	 int j = 100;
+	 // int j = 100;
 
 	/* Add per-device initialization code here */
 	printk(KERN_ALERT "lepton_probe\n");
@@ -306,7 +306,12 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			lepton_dev.loopback_mode = q.loopback_mode;
             break;
 		case LEPTON_IOCTL_TRANSFER:
-			lepton_transfer(lepton_dev.spi_device, 164);
+		{
+			int i = lepton_dev.num_transfers;
+			while (i--) {
+				lepton_transfer(lepton_dev.spi_device, lepton_dev.transfer_size);
+			}
+		}
 			break;
         default:
             return -EINVAL;

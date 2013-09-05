@@ -21,6 +21,22 @@ void get_vars(int fd) {
 	}
 }
 
+
+void set_vars(int fd) {
+	lepton_iotcl_t q;
+
+	  q.num_transfers = 60;
+	  q.transfer_size = 164;
+	  q.loopback_mode = false;
+
+	  if (ioctl(fd, QUERY_SET_VARIABLES, &q) == -1){
+		  perror("query_apps ioctl set");
+	  }
+}
+
+
+
+
 int main(int argc, char **argv) {
 	int fd;
 //	char wr_buf[]={0xff,0x00,0x1f,0x0f};
@@ -36,8 +52,9 @@ int main(int argc, char **argv) {
 		printf("%s: Device %s not found\n", argv[0], argv[1]);
 		exit(1);
 	}
-
+	set_vars(fd);
 	ioctl(fd, LEPTON_IOCTL_TRANSFER, 0);
+
 
 //	get_vars(fd);
 	return 0;
