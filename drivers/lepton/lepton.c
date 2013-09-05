@@ -68,37 +68,45 @@ struct lepton_dev {
 	struct class *class;
 	struct spi_device *spi_device;
 	char *user_buff;
+
+	int num_transfers;	//TODO: init
+	int transfer_size;
+	bool loopback_mode;
 };
 
 static struct lepton_dev lepton_dev;
 
-static int lepton_transfer(struct spi_device *spi)
+static int lepton_transfer(struct spi_device *spi, int size)
 {
 	struct spi_message	msg;
 	struct spi_transfer	xfer;
 	u8			*buf;
 	int			ret;
+	int 		i;
 
 	/*
 	 * Buffers must be properly aligned for DMA. kmalloc() ensures
 	 * that.
 	 */
-	buf = kmalloc(328, GFP_KERNEL);
+	buf = kmalloc(size * 2, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
 	/* Put some "interesting" values into the TX buffer. */
-	buf[0] = 0x55;
-	buf[1] = 0x56;
-	buf[2] = 0x57;
-	buf[3] = 0x58;
+	for (i = 0 ; i < size ; i++) {
+		buf[i] = i;
+	}
+	// buf[0] = 0x55;
+	// buf[1] = 0x56;
+	// buf[2] = 0x57;
+	// buf[3] = 0x58;
 
 	/* Initialize the SPI message and transfer data structures */
 	spi_message_init(&msg);
 	memset(&xfer, 0, sizeof(xfer));
 	xfer.tx_buf = buf;
-	xfer.rx_buf = buf+164;
-	xfer.len = 164;
+	xfer.rx_buf = buf+size;
+	xfer.len = size;
 
 
 	/* Add our only transfer to the message */
@@ -111,8 +119,13 @@ static int lepton_transfer(struct spi_device *spi)
 	ret = spi_sync(spi, &msg);
 	if (ret == 0) {
 		// if (buf[167] == 0xfe)
-			printk(KERN_ALERT "received %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
-			buf[164], buf[165], buf[166], buf[167], buf[168], buf[169], buf[170], buf[171], buf[172], buf[173], buf[174], buf[175]);
+		// for (i = 0 ; i < size ; i++) {
+		// 	printk(KERN_ALERT "%02x ", buf[size + i]);
+		// }
+		// printk(KERN_ALERT "\n");
+			 printk(KERN_ALERT "received %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x \n",
+					buf[size], buf[size+1], buf[size+2], buf[size+3], buf[size+4], buf[size+size-5], buf[size+size-4], buf[size+size-3], 
+					buf[size+size-2], buf[size+size-1]);
 	}
 	else
 		printk(KERN_ALERT "spi_sync() failed %d\n", ret);
@@ -202,9 +215,14 @@ static int __devinit lepton_probe(struct spi_device *spi)
 	lepton_dev.spi_device = spi;
 
 	up(&lepton_dev.spi_sem);
+
+	lepton_dev.num_transfers = 1;
+	lepton_dev.transfer_size = 2;
+	lepton_dev.loopback_mode = true;
+
 	/* Try communicating with the device. */
 	while(j--) {
-		ret = lepton_transfer(spi);
+		ret = lepton_transfer(spi, 10);
 		// j = 0xffff; while(j--);
 	}
 	return ret;
@@ -275,56 +293,39 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
     lepton_iotcl_t q;
 
 	printk(KERN_ALERT "lepton_unlocked_ioctl\n"); 
-				lepton_transfer(lepton_dev.spi_device);
     switch (cmd)
     {
         case QUERY_GET_VARIABLES:
-            // q.status = status;
-            // q.dignity = dignity;
-            // q.ego = ego;
+            q.num_transfers = lepton_dev.num_transfers;
+            q.transfer_size = lepton_dev.transfer_size;
+            q.loopback_mode = lepton_dev.loopback_mode;
             if (copy_to_user((lepton_iotcl_t *)arg, &q, sizeof(lepton_iotcl_t)))
             {
                 return -EACCES;
             }
             break;
         case QUERY_CLR_VARIABLES:
-            // status = 0;
-            // dignity = 0;
-            // ego = 0;
+			lepton_dev.num_transfers = 0;
+			lepton_dev.transfer_size = 0;
+			lepton_dev.loopback_mode = 0;
             break;
         case QUERY_SET_VARIABLES:
             if (copy_from_user(&q, (lepton_iotcl_t *)arg, sizeof(lepton_iotcl_t)))
             {
                 return -EACCES;
             }
-            // status = q.status;
-            // dignity = q.dignity;
-            // ego = q.ego;
+			lepton_dev.num_transfers = q.num_transfers;
+			lepton_dev.transfer_size = q.transfer_size;
+			lepton_dev.loopback_mode = q.loopback_mode;
             break;
 		case LEPTON_IOCTL_TRANSFER:
-			lepton_transfer(lepton_dev.spi_device);
+			lepton_transfer(lepton_dev.spi_device, 10);
 			break;
         default:
             return -EINVAL;
     }
  
     return 0;
-
-
-
-
-
-
-
-
-	// switch(cmd) {
-	// 	case LEPTON_IOCTL_TRANSFER:
-	// 		lepton_transfer(lepton_dev.spi_device);
-	// 		break;
-	// 	default:
-	// 	printk(KERN_ALERT "Bad ioctl called %d\n", cmd);
-	// }
-	// return 0;
 }
 
 static const struct file_operations lepton_fops = {
