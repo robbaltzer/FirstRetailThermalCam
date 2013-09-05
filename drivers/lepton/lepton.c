@@ -96,10 +96,6 @@ static int lepton_transfer(struct spi_device *spi, int size)
 	for (i = 0 ; i < size ; i++) {
 		buf[i] = i;
 	}
-	// buf[0] = 0x55;
-	// buf[1] = 0x56;
-	// buf[2] = 0x57;
-	// buf[3] = 0x58;
 
 	/* Initialize the SPI message and transfer data structures */
 	spi_message_init(&msg);
@@ -108,21 +104,12 @@ static int lepton_transfer(struct spi_device *spi, int size)
 	xfer.rx_buf = buf+size;
 	xfer.len = size;
 
-
 	/* Add our only transfer to the message */
 	spi_message_add_tail(&xfer, &msg);
-
-	// dev_info(&spi->dev, "sending %02x %02x %02x %02x...\n",
-	// 	buf[0], buf[1], buf[2], buf[3]);
 
 	/* Send the message and wait for completion */
 	ret = spi_sync(spi, &msg);
 	if (ret == 0) {
-		// if (buf[167] == 0xfe)
-		// for (i = 0 ; i < size ; i++) {
-		// 	printk(KERN_ALERT "%02x ", buf[size + i]);
-		// }
-		// printk(KERN_ALERT "\n");
 			 printk(KERN_ALERT "received %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x \n",
 					buf[size], buf[size+1], buf[size+2], buf[size+3], buf[size+4], buf[size+size-5], buf[size+size-4], buf[size+size-3], 
 					buf[size+size-2], buf[size+size-1]);
@@ -221,10 +208,10 @@ static int __devinit lepton_probe(struct spi_device *spi)
 	lepton_dev.loopback_mode = true;
 
 	/* Try communicating with the device. */
-	while(j--) {
-		ret = lepton_transfer(spi, 10);
+	// while(j--) {
+		ret = lepton_transfer(spi, 164);
 		// j = 0xffff; while(j--);
-	}
+	// }
 	return ret;
 }
 
@@ -319,7 +306,7 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
 			lepton_dev.loopback_mode = q.loopback_mode;
             break;
 		case LEPTON_IOCTL_TRANSFER:
-			lepton_transfer(lepton_dev.spi_device, 10);
+			lepton_transfer(lepton_dev.spi_device, 164);
 			break;
         default:
             return -EINVAL;

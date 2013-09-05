@@ -39,6 +39,6 @@ int main(int argc, char **argv) {
 
 	ioctl(fd, LEPTON_IOCTL_TRANSFER, 0);
 
-	get_vars(fd);
+//	get_vars(fd);
 	return 0;
 }
