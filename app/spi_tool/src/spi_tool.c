@@ -21,39 +21,25 @@ void get_vars(int fd) {
 	}
 }
 
-
-void set_vars(int fd) {
-	lepton_iotcl_t q;
-
-
-	  q.loopback_mode = false;
-
-	  if (ioctl(fd, QUERY_SET_VARIABLES, &q) == -1){
-		  perror("query_apps ioctl set");
-	  }
-}
-
-
-
-
 int main(int argc, char **argv) {
 	int fd;
 	lepton_iotcl_t q;
 
 	if (argc < 4) {
-		printf("Usage:\n%s [packet_size] [repeats] [quiet:1=yes 0=no]\n", argv[0]);
+		printf("Usage:\n%s [packet_size] [repeats] [quiet:1/0]\n", argv[0]);
 		exit(1);
 	}
 
 	fd = open("/dev/lepton", O_RDWR);
 	if (fd <= 0) {
-		printf("%s: Device not found /dev/lepton\n", argv[0]);
+		printf("Device not found /dev/lepton\n");
 		exit(1);
 	}
 
+
 	q.transfer_size = atoi(argv[1]);
 	q.num_transfers = atoi(argv[2]);
-	q.quiet = atoi(argv[3]);
+	q.quiet = (atoi(argv[3]) == 1) ? true : false;
 	q.loopback_mode = false;
 
 	if (ioctl(fd, QUERY_SET_VARIABLES, &q) == -1) {

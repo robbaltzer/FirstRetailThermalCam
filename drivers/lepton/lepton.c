@@ -69,7 +69,7 @@ struct lepton_dev {
 	struct spi_device *spi_device;
 	char *user_buff;
 
-	int num_transfers;	//TODO: init
+	int num_transfers;	
 	int transfer_size;
 	bool loopback_mode;
 	bool quiet;
@@ -190,9 +190,7 @@ static int lepton_open(struct inode *inode, struct file *filp)
 
 static int __devinit lepton_probe(struct spi_device *spi)
 {
-//	struct lepton_data *pdata = spi->dev.platform_data;
 	int ret = 0;
-	 // int j = 100;
 
 	/* Add per-device initialization code here */
 	printk(KERN_ALERT "lepton_probe\n");
@@ -211,11 +209,7 @@ static int __devinit lepton_probe(struct spi_device *spi)
 	lepton_dev.loopback_mode = true;
 	lepton_dev.quiet = false;
 
-	/* Try communicating with the device. */
-	// while(j--) {
-		ret = lepton_transfer(spi, 164);
-		// j = 0xffff; while(j--);
-	// }
+	ret = lepton_transfer(spi, 164);
 	return ret;
 }
 
@@ -283,7 +277,7 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
 {
     lepton_iotcl_t q;
 
-	printk(KERN_ALERT "lepton_unlocked_ioctl\n"); 
+	// printk(KERN_ALERT "lepton_unlocked_ioctl\n"); 
     switch (cmd)
     {
         case QUERY_GET_VARIABLES:
@@ -307,10 +301,10 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
             {
                 return -EACCES;
             }
-            printk(KERN_ALERT "num_transfers %d", q.num_transfers);
-			printk(KERN_ALERT "transfer_size %d", q.transfer_size);
-			printk(KERN_ALERT "loopback_mode %d", q.loopback_mode);
-			printk(KERN_ALERT "quiet %d", q.quiet);
+   //          printk(KERN_ALERT "num_transfers %d", q.num_transfers);
+			// printk(KERN_ALERT "transfer_size %d", q.transfer_size);
+			// printk(KERN_ALERT "loopback_mode %d", q.loopback_mode);
+			// printk(KERN_ALERT "quiet %d", q.quiet);
 			lepton_dev.num_transfers = q.num_transfers;
 			lepton_dev.transfer_size = q.transfer_size;
 			lepton_dev.loopback_mode = q.loopback_mode;
