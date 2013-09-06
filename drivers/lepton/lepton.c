@@ -72,6 +72,7 @@ struct lepton_dev {
 	int num_transfers;	//TODO: init
 	int transfer_size;
 	bool loopback_mode;
+	bool quiet;
 };
 
 static struct lepton_dev lepton_dev;
@@ -110,9 +111,11 @@ static int lepton_transfer(struct spi_device *spi, int size)
 	/* Send the message and wait for completion */
 	ret = spi_sync(spi, &msg);
 	if (ret == 0) {
-			 // printk(KERN_ALERT "received %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x \n",
-				// 	buf[size], buf[size+1], buf[size+2], buf[size+3], buf[size+4], buf[size+size-5], buf[size+size-4], buf[size+size-3], 
-				// 	buf[size+size-2], buf[size+size-1]);
+		if (!lepton_dev.quiet) {
+			  printk(KERN_ALERT "received %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x \n",
+				 	buf[size], buf[size+1], buf[size+2], buf[size+3], buf[size+4], buf[size+size-5], buf[size+size-4], buf[size+size-3], 
+				 	buf[size+size-2], buf[size+size-1]);
+			}
 	}
 	else
 		printk(KERN_ALERT "spi_sync() failed %d\n", ret);
@@ -206,6 +209,7 @@ static int __devinit lepton_probe(struct spi_device *spi)
 	lepton_dev.num_transfers = 1;
 	lepton_dev.transfer_size = 2;
 	lepton_dev.loopback_mode = true;
+	lepton_dev.quiet = false;
 
 	/* Try communicating with the device. */
 	// while(j--) {
@@ -286,6 +290,7 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
             q.num_transfers = lepton_dev.num_transfers;
             q.transfer_size = lepton_dev.transfer_size;
             q.loopback_mode = lepton_dev.loopback_mode;
+            q.quiet = lepton_dev.quiet;
             if (copy_to_user((lepton_iotcl_t *)arg, &q, sizeof(lepton_iotcl_t)))
             {
                 return -EACCES;
@@ -294,16 +299,22 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
         case QUERY_CLR_VARIABLES:
 			lepton_dev.num_transfers = 0;
 			lepton_dev.transfer_size = 0;
-			lepton_dev.loopback_mode = 0;
+			lepton_dev.loopback_mode = 0;			
+			lepton_dev.quiet = 0;
             break;
         case QUERY_SET_VARIABLES:
             if (copy_from_user(&q, (lepton_iotcl_t *)arg, sizeof(lepton_iotcl_t)))
             {
                 return -EACCES;
             }
+            printk(KERN_ALERT "num_transfers %d", q.num_transfers);
+			printk(KERN_ALERT "transfer_size %d", q.transfer_size);
+			printk(KERN_ALERT "loopback_mode %d", q.loopback_mode);
+			printk(KERN_ALERT "quiet %d", q.quiet);
 			lepton_dev.num_transfers = q.num_transfers;
 			lepton_dev.transfer_size = q.transfer_size;
 			lepton_dev.loopback_mode = q.loopback_mode;
+			lepton_dev.quiet = q.quiet;
             break;
 		case LEPTON_IOCTL_TRANSFER:
 		{

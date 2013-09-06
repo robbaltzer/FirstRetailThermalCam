@@ -17,7 +17,7 @@ void get_vars(int fd) {
 	} else {
 		printf("num_transfers : %d\n", q.num_transfers);
 		printf("transfer_size: %d\n", q.transfer_size);
-		printf("loopback_mode    : %d\n", q.loopback_mode);
+		printf("loopback_mode: %d\n", q.loopback_mode);
 	}
 }
 
@@ -25,8 +25,7 @@ void get_vars(int fd) {
 void set_vars(int fd) {
 	lepton_iotcl_t q;
 
-	  q.num_transfers = 60;
-	  q.transfer_size = 164;
+
 	  q.loopback_mode = false;
 
 	  if (ioctl(fd, QUERY_SET_VARIABLES, &q) == -1){
@@ -39,23 +38,27 @@ void set_vars(int fd) {
 
 int main(int argc, char **argv) {
 	int fd;
-//	char wr_buf[]={0xff,0x00,0x1f,0x0f};
-//	char rd_buf[10];;
+	lepton_iotcl_t q;
 
-	if (argc < 2) {
-		printf("Usage:\n%s [device]\n", argv[0]);
+	if (argc < 4) {
+		printf("Usage:\n%s [packet_size] [repeats] [quiet:1=yes 0=no]\n", argv[0]);
 		exit(1);
 	}
 
-	fd = open(argv[1], O_RDWR);
+	fd = open("/dev/lepton", O_RDWR);
 	if (fd <= 0) {
-		printf("%s: Device %s not found\n", argv[0], argv[1]);
+		printf("%s: Device not found /dev/lepton\n", argv[0]);
 		exit(1);
 	}
-	set_vars(fd);
+
+	q.transfer_size = atoi(argv[1]);
+	q.num_transfers = atoi(argv[2]);
+	q.quiet = atoi(argv[3]);
+	q.loopback_mode = false;
+
+	if (ioctl(fd, QUERY_SET_VARIABLES, &q) == -1) {
+		perror("query_apps ioctl set");
+	}
 	ioctl(fd, LEPTON_IOCTL_TRANSFER, 0);
-
-
-//	get_vars(fd);
 	return 0;
 }
