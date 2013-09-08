@@ -93,9 +93,13 @@ static int lepton_transfer(struct spi_device *spi, int size)
 	if (!buf)
 		return -ENOMEM;
 
-	/* Put some "interesting" values into the TX buffer. */
-	for (i = 0 ; i < size ; i++) {
-		buf[i] = i;
+	if (lepton_dev.loopback_mode) {
+		for (i = 0 ; i < size ; i++) {
+			buf[i] = i;
+		}
+	}
+	else {
+		memset(buf, 0, size);
 	}
 
 	/* Initialize the SPI message and transfer data structures */
