@@ -25,7 +25,7 @@ int main(int argc, char **argv) {
 	int fd;
 	lepton_iotcl_t q;
 
-	if (argc < 4) {
+	if (argc < 5) {
 		printf("Usage:\n%s [packet_size] [repeats] [quiet:1/0]\n", argv[0]);
 		exit(1);
 	}
@@ -36,11 +36,10 @@ int main(int argc, char **argv) {
 		exit(1);
 	}
 
-
 	q.transfer_size = atoi(argv[1]);
 	q.num_transfers = atoi(argv[2]);
 	q.quiet = (atoi(argv[3]) == 1) ? true : false;
-	q.loopback_mode = false;
+	q.loopback_mode = (atoi(argv[4]) == 1) ? true : false;
 
 	if (ioctl(fd, QUERY_SET_VARIABLES, &q) == -1) {
 		perror("query_apps ioctl set");
