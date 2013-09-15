@@ -707,7 +707,7 @@ Thread<y:LabelModel>
           <y:Fill hasColor="false" transparent="false"/>
           <y:BorderStyle hasColor="false" type="line" width="1.0"/>
           <y:NodeLabel alignment="right" autoSizePolicy="content" fontFamily="Dialog" fontSize="14" fontStyle="bold" hasBackgroundColor="false" hasLineColor="false" height="55.4541015625" modelName="custom" textColor="#008000" visible="true" width="123.806640625" x="-24.9033203125" y="-3.1607881747037254">Atmel
-AT91SAMX25
+AT91SAM9X25
 System On a Chip<y:LabelModel>
               <y:SmartNodeLabelModel distance="4.0"/>
             </y:LabelModel>
