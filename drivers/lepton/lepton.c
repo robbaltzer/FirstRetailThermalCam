@@ -77,13 +77,14 @@ struct lepton_dev {
 
 static struct lepton_dev lepton_dev;
 
-static int lepton_transfer(struct spi_device *spi, int size)
+static u8 lepton_transfer(struct spi_device *spi, int size)
 {
 	struct spi_message	msg;
 	struct spi_transfer	xfer;
 	u8			*buf;
 	int			ret;
 	int 		i;
+	u8 			line;
 
 	/*
 	 * Buffers must be properly aligned for DMA. kmalloc() ensures
@@ -124,10 +125,11 @@ static int lepton_transfer(struct spi_device *spi, int size)
 	else
 		printk(KERN_ALERT "spi_sync() failed %d\n", ret);
 
+	line = buf[size+1];
 	/* Clean up and pass the spi_sync() return value on to the caller */
 	kfree(buf);
 
-	return ret;
+	return line;
 }
 
 static ssize_t lepton_read(struct file *filp, char __user *buff, size_t count,
@@ -213,7 +215,7 @@ static int __devinit lepton_probe(struct spi_device *spi)
 	lepton_dev.loopback_mode = true;
 	lepton_dev.quiet = false;
 
-	ret = lepton_transfer(spi, 164);
+//	ret = lepton_transfer(spi, 164);
 	return ret;
 }
 
@@ -316,10 +318,19 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
             break;
 		case LEPTON_IOCTL_TRANSFER:
 		{
-			int i = lepton_dev.num_transfers;
+			u32 i = lepton_dev.num_transfers;
+			u8 ret_val;
+
 			while (i--) {
-				lepton_transfer(lepton_dev.spi_device, lepton_dev.transfer_size);
+				ret_val = lepton_transfer(lepton_dev.spi_device, lepton_dev.transfer_size);
+				if (ret_val == 59) {
+					printk(KERN_ALERT "Frame detected\n");
+				}
+				if (ret_val == 60) {
+					printk(KERN_ALERT "Frame NOT detected\n");
+				}
 			}
+
 		}
 			break;
         default:
