@@ -50,10 +50,13 @@
 #include <linux/cdev.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
+#include <linux/hrtimer.h>
+#include <linux/ktime.h>
 
 #include "lepton.h"
 
 #define USER_BUFF_SIZE 128
+#define MS_TO_NS(x) (x * 1E6L)
 
 #define SPI_BUS 1
 #define SPI_BUS_CS1 1
@@ -75,7 +78,8 @@ struct lepton_dev {
 	bool loopback_mode;
 	bool quiet;
 
-
+//	ktime_t ktime;
+	struct hrtimer hr_timer;
 };
 
 static struct lepton_dev lepton_dev;
@@ -197,6 +201,33 @@ static int lepton_open(struct inode *inode, struct file *filp)
 	return status;
 }
 
+enum hrtimer_restart my_hrtimer_callback( struct hrtimer *timer )
+{
+  printk( KERN_ALERT "my_hrtimer_callback called (%ld).\n", jiffies );
+
+  return HRTIMER_NORESTART;
+}
+
+int init_hrtime_module( void )
+{
+  ktime_t ktime;
+  unsigned long delay_in_ms = 2000L;
+
+  printk("HR Timer module installing\n");
+
+  ktime = ktime_set( 0, MS_TO_NS(delay_in_ms) );
+
+  hrtimer_init( &lepton_dev.hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
+
+  lepton_dev.hr_timer.function = &my_hrtimer_callback;
+
+  printk( "Starting timer to fire in %ldms (%ld)\n", delay_in_ms, jiffies );
+
+  hrtimer_start( &lepton_dev.hr_timer, ktime, HRTIMER_MODE_REL );
+
+  return 0;
+}
+
 static int __devinit lepton_probe(struct spi_device *spi)
 {
 	int ret = 0;
@@ -218,7 +249,7 @@ static int __devinit lepton_probe(struct spi_device *spi)
 	lepton_dev.loopback_mode = true;
 	lepton_dev.quiet = false;
 
-//	ret = lepton_transfer(spi, 164);
+	init_hrtime_module();
 	return ret;
 }
 
@@ -281,82 +312,61 @@ static int __init lepton_init_spi(void)
 	return 0;
 }
 
-long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd, 
-                            unsigned long arg)
-{
-    lepton_iotcl_t q;
+long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
+		unsigned long arg) {
+	lepton_iotcl_t q;
 
-	// printk(KERN_ALERT "lepton_unlocked_ioctl\n"); 
-    switch (cmd)
-    {
-        case QUERY_GET_VARIABLES:
-            q.num_transfers = lepton_dev.num_transfers;
-            q.transfer_size = lepton_dev.transfer_size;
-            q.loopback_mode = lepton_dev.loopback_mode;
-            q.quiet = lepton_dev.quiet;
-            if (copy_to_user((lepton_iotcl_t *)arg, &q, sizeof(lepton_iotcl_t)))
-            {
-                return -EACCES;
-            }
-            break;
-        case QUERY_CLR_VARIABLES:
-			lepton_dev.num_transfers = 0;
-			lepton_dev.transfer_size = 0;
-			lepton_dev.loopback_mode = 0;			
-			lepton_dev.quiet = 0;
-            break;
-        case QUERY_SET_VARIABLES:
-            if (copy_from_user(&q, (lepton_iotcl_t *)arg, sizeof(lepton_iotcl_t)))
-            {
-                return -EACCES;
-            }
-   //          printk(KERN_ALERT "num_transfers %d", q.num_transfers);
-			// printk(KERN_ALERT "transfer_size %d", q.transfer_size);
-			// printk(KERN_ALERT "loopback_mode %d", q.loopback_mode);
-			// printk(KERN_ALERT "quiet %d", q.quiet);
-			lepton_dev.num_transfers = q.num_transfers;
-			lepton_dev.transfer_size = q.transfer_size;
-			lepton_dev.loopback_mode = q.loopback_mode;
-			lepton_dev.quiet = q.quiet;
-            break;
-		case LEPTON_IOCTL_TRANSFER:
-		{
-			u32 frame_cnt = 0, /*cnt1 = 0, cnt59 = 0,*/ i = lepton_dev.num_transfers;
-			u8 ret_val;
-			u8 line = 0;
+	switch (cmd) {
+	case QUERY_GET_VARIABLES:
+		q.num_transfers = lepton_dev.num_transfers;
+		q.transfer_size = lepton_dev.transfer_size;
+		q.loopback_mode = lepton_dev.loopback_mode;
+		q.quiet = lepton_dev.quiet;
+		if (copy_to_user((lepton_iotcl_t *) arg, &q, sizeof(lepton_iotcl_t))) {
+			return -EACCES;
+		}
+		break;
+	case QUERY_CLR_VARIABLES:
+		lepton_dev.num_transfers = 0;
+		lepton_dev.transfer_size = 0;
+		lepton_dev.loopback_mode = 0;
+		lepton_dev.quiet = 0;
+		break;
+	case QUERY_SET_VARIABLES:
+		if (copy_from_user(&q, (lepton_iotcl_t *) arg,
+				sizeof(lepton_iotcl_t))) {
+			return -EACCES;
+		}
+		lepton_dev.num_transfers = q.num_transfers;
+		lepton_dev.transfer_size = q.transfer_size;
+		lepton_dev.loopback_mode = q.loopback_mode;
+		lepton_dev.quiet = q.quiet;
+		break;
+	case LEPTON_IOCTL_TRANSFER: {
+		u32 frame_cnt = 0, /*cnt1 = 0, cnt59 = 0,*/i = lepton_dev.num_transfers;
+		u8 ret_val;
+		u8 line = 0;
 
-			while (i--) {
-				ret_val = lepton_transfer(lepton_dev.spi_device, lepton_dev.transfer_size);
-				if (ret_val == line) {
-					line = line + 1;
-					if (line == 60) {
-						frame_cnt = frame_cnt + 1;
-						line = 0;
-					}
+		while (i--) {
+			ret_val = lepton_transfer(lepton_dev.spi_device,
+					lepton_dev.transfer_size);
+			if (ret_val == line) {
+				line = line + 1;
+				if (line == 60) {
+					frame_cnt = frame_cnt + 1;
+					line = 0;
 				}
 			}
-				printk(KERN_ALERT "%d full frames detected\n", frame_cnt);
-
-
-
-			// 	if (ret_val == 1) {
-			// 		cnt1 = cnt1 + 1;
-			// 	}
-			// 	if (ret_val == 59) {
-			// 		cnt59 = cnt59 + 1;
-			// 	}
-			// 	if (ret_val == 60) {
-			// 		printk(KERN_ALERT "Frame NOT detected\n");
-			// 	}
-			// }
-			// printk(KERN_ALERT "%d line 1s %d line 59s detected\n", cnt1, cnt59);
 		}
-			break;
-        default:
-            return -EINVAL;
-    }
- 
-    return 0;
+		printk(KERN_ALERT "%d full frames detected\n", frame_cnt);
+	}
+	break;
+	default:
+		return -EINVAL;
+		break;
+	}
+
+	return 0;
 }
 
 static const struct file_operations lepton_fops = {
