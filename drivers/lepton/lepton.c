@@ -50,6 +50,7 @@
 #include <linux/cdev.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
+
 #include "lepton.h"
 
 #define USER_BUFF_SIZE 128
@@ -73,6 +74,8 @@ struct lepton_dev {
 	int transfer_size;
 	bool loopback_mode;
 	bool quiet;
+
+
 };
 
 static struct lepton_dev lepton_dev;
@@ -318,19 +321,35 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
             break;
 		case LEPTON_IOCTL_TRANSFER:
 		{
-			u32 i = lepton_dev.num_transfers;
+			u32 frame_cnt = 0, /*cnt1 = 0, cnt59 = 0,*/ i = lepton_dev.num_transfers;
 			u8 ret_val;
+			u8 line = 0;
 
 			while (i--) {
 				ret_val = lepton_transfer(lepton_dev.spi_device, lepton_dev.transfer_size);
-				if (ret_val == 59) {
-					printk(KERN_ALERT "Frame detected\n");
-				}
-				if (ret_val == 60) {
-					printk(KERN_ALERT "Frame NOT detected\n");
+				if (ret_val == line) {
+					line = line + 1;
+					if (line == 60) {
+						frame_cnt = frame_cnt + 1;
+						line = 0;
+					}
 				}
 			}
+				printk(KERN_ALERT "%d full frames detected\n", frame_cnt);
 
+
+
+			// 	if (ret_val == 1) {
+			// 		cnt1 = cnt1 + 1;
+			// 	}
+			// 	if (ret_val == 59) {
+			// 		cnt59 = cnt59 + 1;
+			// 	}
+			// 	if (ret_val == 60) {
+			// 		printk(KERN_ALERT "Frame NOT detected\n");
+			// 	}
+			// }
+			// printk(KERN_ALERT "%d line 1s %d line 59s detected\n", cnt1, cnt59);
 		}
 			break;
         default:
