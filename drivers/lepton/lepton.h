@@ -49,5 +49,6 @@ typedef struct {
 #define QUERY_SET_VARIABLES _IOW('q', 3, lepton_iotcl_t *)
 
 #define LEPTON_IOCTL_TRANSFER	(999001)
+#define LEPTON_IOCTL_GET_FRAME	(999002)
 
 #endif /* __LEPTON_H */

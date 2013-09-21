@@ -50,9 +50,9 @@
 #include <linux/cdev.h>
 #include <linux/fs.h>
 #include <asm/uaccess.h>
-#include <linux/hrtimer.h>
-#include <linux/ktime.h>
-
+//#include <linux/hrtimer.h>
+//#include <linux/ktime.h>
+#include <linux/delay.h>
 #include "lepton.h"
 
 #define USER_BUFF_SIZE 128
@@ -79,7 +79,7 @@ struct lepton_dev {
 	bool quiet;
 
 //	ktime_t ktime;
-	struct hrtimer hr_timer;
+//	struct hrtimer hr_timer;
 };
 
 static struct lepton_dev lepton_dev;
@@ -201,32 +201,49 @@ static int lepton_open(struct inode *inode, struct file *filp)
 	return status;
 }
 
-enum hrtimer_restart my_hrtimer_callback( struct hrtimer *timer )
-{
-  printk( KERN_ALERT "my_hrtimer_callback called (%ld).\n", jiffies );
+//enum hrtimer_restart my_hrtimer_callback( struct hrtimer *timer )
+//{
+//	u8 ret_val;
+//	u8 line = 0;
+//
+////	while (1) {
+////		ret_val = lepton_transfer(lepton_dev.spi_device,
+////				lepton_dev.transfer_size);
+////		if (ret_val == line) {
+////			line = line + 1;
+////			if (line == 60) {
+////				printk( KERN_ALERT "Frame Found");
+////				goto exit;
+////			}
+////		}
+////	}
+////			ret_val = lepton_transfer(lepton_dev.spi_device,
+////					lepton_dev.transfer_size);
+//
+//	printk( KERN_ALERT "my_hrtimer_callback called (%ld).\n", jiffies );
+//exit:
+//  hrtimer_start( &lepton_dev.hr_timer, lepton_dev.ktime, HRTIMER_MODE_REL );
+//  return HRTIMER_NORESTART;	//TODO: HRTIMER_RESTART?
+//}
 
-  return HRTIMER_NORESTART;
-}
-
-int init_hrtime_module( void )
-{
-  ktime_t ktime;
-  unsigned long delay_in_ms = 2000L;
-
-  printk("HR Timer module installing\n");
-
-  ktime = ktime_set( 0, MS_TO_NS(delay_in_ms) );
-
-  hrtimer_init( &lepton_dev.hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
-
-  lepton_dev.hr_timer.function = &my_hrtimer_callback;
-
-  printk( "Starting timer to fire in %ldms (%ld)\n", delay_in_ms, jiffies );
-
-  hrtimer_start( &lepton_dev.hr_timer, ktime, HRTIMER_MODE_REL );
-
-  return 0;
-}
+//int init_hrtime_module( void )
+//{
+//  unsigned long delay_in_ms = 2000L;
+//
+//  printk("HR Timer module installing\n");
+//
+//  lepton_dev.ktime = ktime_set( 0, MS_TO_NS(delay_in_ms) );
+//
+//  hrtimer_init( &lepton_dev.hr_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL );
+//
+//  lepton_dev.hr_timer.function = &my_hrtimer_callback;
+//
+//  printk( "Starting timer to fire in %ldms (%ld)\n", delay_in_ms, jiffies );
+//
+//  hrtimer_start( &lepton_dev.hr_timer, lepton_dev.ktime, HRTIMER_MODE_REL );
+//
+//  return 0;
+//}
 
 static int __devinit lepton_probe(struct spi_device *spi)
 {
@@ -249,7 +266,7 @@ static int __devinit lepton_probe(struct spi_device *spi)
 	lepton_dev.loopback_mode = true;
 	lepton_dev.quiet = false;
 
-	init_hrtime_module();
+//	init_hrtime_module();
 	return ret;
 }
 
@@ -342,7 +359,8 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		lepton_dev.loopback_mode = q.loopback_mode;
 		lepton_dev.quiet = q.quiet;
 		break;
-	case LEPTON_IOCTL_TRANSFER: {
+	case LEPTON_IOCTL_TRANSFER:
+	{
 		u32 frame_cnt = 0, /*cnt1 = 0, cnt59 = 0,*/i = lepton_dev.num_transfers;
 		u8 ret_val;
 		u8 line = 0;
@@ -355,12 +373,32 @@ long lepton_unlocked_ioctl(struct file *filp, unsigned int cmd,
 				if (line == 60) {
 					frame_cnt = frame_cnt + 1;
 					line = 0;
+//					printk(KERN_ALERT "frame detected\n");
+					msleep(100);
 				}
 			}
 		}
 		printk(KERN_ALERT "%d full frames detected\n", frame_cnt);
 	}
 	break;
+	case LEPTON_IOCTL_GET_FRAME:
+	{
+		u16 i;
+		u8 ret_val;
+		u8 line = 0;
+
+		for ( i = 0 ; i < 65535 ; i--) {
+			ret_val = lepton_transfer(lepton_dev.spi_device,
+					lepton_dev.transfer_size);
+			if (ret_val == line) {
+				line = line + 1;
+				if (line == 60) {
+					printk(KERN_ALERT "frame detected in %d transfers\n", i);
+				}
+			}
+		}
+	}
+		break;
 	default:
 		return -EINVAL;
 		break;
